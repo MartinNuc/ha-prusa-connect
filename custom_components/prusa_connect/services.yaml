@@ -1,0 +1,76 @@
+pause_print:
+  target:
+    device:
+      integration: prusa_connect
+
+resume_print:
+  target:
+    device:
+      integration: prusa_connect
+
+stop_print:
+  target:
+    device:
+      integration: prusa_connect
+
+start_print_cloud:
+  target:
+    device:
+      integration: prusa_connect
+  fields:
+    file_hash:
+      required: true
+      selector:
+        text:
+    team_id:
+      required: true
+      selector:
+        number:
+          mode: box
+          min: 0
+
+start_print_usb:
+  target:
+    device:
+      integration: prusa_connect
+  fields:
+    path:
+      required: true
+      selector:
+        text:
+
+start_print_url:
+  target:
+    device:
+      integration: prusa_connect
+  fields:
+    file_url:
+      required: true
+      selector:
+        text:
+
+set_ready:
+  target:
+    device:
+      integration: prusa_connect
+
+cancel_ready:
+  target:
+    device:
+      integration: prusa_connect
+
+respond_to_dialog:
+  target:
+    device:
+      integration: prusa_connect
+  fields:
+    dialog_id:
+      required: true
+      selector:
+        number:
+          mode: box
+          min: 0
+    button:
+      required: true
+      selector:
+        text:

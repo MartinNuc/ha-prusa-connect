@@ -1,0 +1,150 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Prusa Account",
+        "description": "Log in with your Prusa Account credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "totp": {
+        "title": "Two-Factor Authentication",
+        "description": "Enter the 6-digit code from your authenticator app.",
+        "data": {
+          "totp_code": "TOTP Code"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Your session has expired. Please log in again.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "invalid_totp": "Invalid TOTP code.",
+      "cannot_connect": "Unable to connect to Prusa Account.",
+      "unknown": "An unexpected error occurred.",
+      "totp_not_supported_reauth": "Re-authentication with 2FA is not yet supported. Please disable 2FA temporarily to re-authenticate."
+    },
+    "abort": {
+      "already_configured": "This Prusa Account is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "state": { "name": "State" },
+      "nozzle_temperature": { "name": "Nozzle Temperature" },
+      "nozzle_target_temperature": { "name": "Nozzle Target" },
+      "bed_temperature": { "name": "Bed Temperature" },
+      "bed_target_temperature": { "name": "Bed Target" },
+      "print_speed": { "name": "Print Speed" },
+      "flow_factor": { "name": "Flow Factor" },
+      "z_height": { "name": "Z Height" },
+      "print_progress": { "name": "Print Progress" },
+      "current_job": { "name": "Current Job" },
+      "job_state": { "name": "Job State" },
+      "time_remaining": { "name": "Time Remaining" },
+      "time_elapsed": { "name": "Time Elapsed" },
+      "material": { "name": "Material" },
+      "firmware_version": { "name": "Firmware" },
+      "serial_number": { "name": "Serial Number" },
+      "unseen_notifications": { "name": "Unseen Notifications" }
+    },
+    "binary_sensor": {
+      "online": { "name": "Online" },
+      "printing": { "name": "Printing" },
+      "attention_required": { "name": "Attention Required" },
+      "mmu_enabled": { "name": "MMU" },
+      "enclosure": { "name": "Enclosure" }
+    },
+    "button": {
+      "pause_print": { "name": "Pause Print" },
+      "resume_print": { "name": "Resume Print" },
+      "stop_print": { "name": "Stop Print" },
+      "set_ready": { "name": "Set Ready" },
+      "cancel_ready": { "name": "Cancel Ready" }
+    },
+    "camera": {
+      "camera": { "name": "Camera" }
+    },
+    "image": {
+      "print_preview": { "name": "Print Preview" }
+    }
+  },
+  "services": {
+    "pause_print": {
+      "name": "Pause Print",
+      "description": "Pause the current print."
+    },
+    "resume_print": {
+      "name": "Resume Print",
+      "description": "Resume a paused print."
+    },
+    "stop_print": {
+      "name": "Stop Print",
+      "description": "Stop the current print."
+    },
+    "start_print_cloud": {
+      "name": "Start Print (Cloud)",
+      "description": "Start a print from cloud storage.",
+      "fields": {
+        "file_hash": {
+          "name": "File Hash",
+          "description": "The hash of the file to print."
+        },
+        "team_id": {
+          "name": "Team ID",
+          "description": "The ID of the team that owns the file."
+        }
+      }
+    },
+    "start_print_usb": {
+      "name": "Start Print (USB)",
+      "description": "Start a print from USB storage.",
+      "fields": {
+        "path": {
+          "name": "File Path",
+          "description": "Path to the file on USB storage."
+        }
+      }
+    },
+    "start_print_url": {
+      "name": "Start Print (URL)",
+      "description": "Start a print from a URL.",
+      "fields": {
+        "file_url": {
+          "name": "File URL",
+          "description": "URL of the file to print (e.g. from Printables)."
+        }
+      }
+    },
+    "set_ready": {
+      "name": "Set Ready",
+      "description": "Mark the printer as ready after a finished print."
+    },
+    "cancel_ready": {
+      "name": "Cancel Ready",
+      "description": "Cancel the ready state."
+    },
+    "respond_to_dialog": {
+      "name": "Respond to Dialog",
+      "description": "Respond to a printer dialog prompt.",
+      "fields": {
+        "dialog_id": {
+          "name": "Dialog ID",
+          "description": "The ID of the dialog to respond to."
+        },
+        "button": {
+          "name": "Button",
+          "description": "The button to press in the dialog."
+        }
+      }
+    }
+  }
+}
