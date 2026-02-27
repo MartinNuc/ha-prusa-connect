@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import PrusaConnectConfigEntry
 from .api import PrusaConnectAPI
-from .const import DATA_API, DATA_PRINTER_COORDINATOR, DOMAIN
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
+
+if TYPE_CHECKING:
+    from . import PrusaConnectConfigEntry
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -98,12 +100,12 @@ class PrusaConnectButton(PrusaConnectEntity, ButtonEntity):
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: PrusaConnectConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Prusa Connect buttons."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    printer_coordinator: PrusaConnectPrinterCoordinator = data[DATA_PRINTER_COORDINATOR]
-    api: PrusaConnectAPI = data[DATA_API]
+    data = entry.runtime_data
+    printer_coordinator = data.printer_coordinator
+    api = data.api
 
     entities: list[PrusaConnectButton] = []
 

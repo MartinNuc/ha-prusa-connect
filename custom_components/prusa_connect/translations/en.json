@@ -23,18 +23,32 @@
           "email": "Email",
           "password": "Password"
         }
+      },
+      "reauth_totp": {
+        "title": "Re-authenticate — Two-Factor",
+        "description": "Enter the 6-digit code from your authenticator app.",
+        "data": {
+          "totp_code": "TOTP Code"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid email or password.",
       "invalid_totp": "Invalid TOTP code.",
       "cannot_connect": "Unable to connect to Prusa Account.",
-      "unknown": "An unexpected error occurred.",
-      "totp_not_supported_reauth": "Re-authentication with 2FA is not yet supported. Please disable 2FA temporarily to re-authenticate."
+      "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This Prusa Account is already configured."
+      "already_configured": "This Prusa Account is already configured.",
+      "reauth_successful": "Re-authentication successful.",
+      "unique_id_mismatch": "The account does not match the original configuration."
     }
+  },
+  "exceptions": {
+    "no_device": { "message": "No device specified in service call." },
+    "device_not_found": { "message": "Device not found." },
+    "not_prusa_device": { "message": "Device is not a Prusa Connect printer." },
+    "entry_not_found": { "message": "Configuration entry not found for device." }
   },
   "entity": {
     "sensor": {
@@ -53,8 +67,7 @@
       "time_elapsed": { "name": "Time Elapsed" },
       "material": { "name": "Material" },
       "firmware_version": { "name": "Firmware" },
-      "serial_number": { "name": "Serial Number" },
-      "unseen_notifications": { "name": "Unseen Notifications" }
+      "serial_number": { "name": "Serial Number" }
     },
     "binary_sensor": {
       "online": { "name": "Online" },

@@ -6,7 +6,7 @@ import asyncio
 from datetime import timedelta
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING
 
 from aiohttp import ClientError
 from homeassistant.core import HomeAssistant
@@ -15,6 +15,9 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import PrusaConnectAPI
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, FAST_SCAN_DURATION, FAST_SCAN_INTERVAL
+
+if TYPE_CHECKING:
+    from . import PrusaConnectConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,13 +29,22 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     detail dict (including telemetry).
     """
 
-    def __init__(self, hass: HomeAssistant, api: PrusaConnectAPI) -> None:
+    config_entry: PrusaConnectConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: PrusaConnectConfigEntry,
+        api: PrusaConnectAPI,
+    ) -> None:
         """Initialize the printer coordinator."""
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=f"{DOMAIN}_printers",
             update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            always_update=False,
         )
         self.api = api
         self._fast_poll_until: float = 0
@@ -40,22 +52,19 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     def expect_change(self) -> None:
         """Speed up polling temporarily after a command."""
         self._fast_poll_until = time.monotonic() + FAST_SCAN_DURATION
-
-    @property
-    def update_interval(self) -> timedelta | None:
-        """Return the current update interval (fast after commands)."""
+        # Update the interval immediately
         if time.monotonic() < self._fast_poll_until:
-            return timedelta(seconds=FAST_SCAN_INTERVAL)
-        return timedelta(seconds=DEFAULT_SCAN_INTERVAL)
-
-    @update_interval.setter
-    def update_interval(self, value: timedelta | None) -> None:
-        """Allow setting the update interval (used by base class)."""
-        # We manage the interval dynamically, so just accept the set
-        pass
+            self.update_interval = timedelta(seconds=FAST_SCAN_INTERVAL)
 
     async def _async_update_data(self) -> dict[str, dict]:
         """Fetch printer data from the API."""
+        # Restore normal interval if fast poll window expired
+        if (
+            time.monotonic() >= self._fast_poll_until
+            and self.update_interval != timedelta(seconds=DEFAULT_SCAN_INTERVAL)
+        ):
+            self.update_interval = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
+
         try:
             printers = await self.api.get_printers()
 
@@ -66,6 +75,9 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             result: dict[str, dict] = {}
             for printer, detail in zip(printers, details):
                 uuid = printer["uuid"]
+                if isinstance(detail, ConfigEntryAuthFailed):
+                    # Auth failure must propagate to trigger reauth
+                    raise detail
                 if isinstance(detail, Exception):
                     _LOGGER.warning(
                         "Failed to fetch detail for printer %s: %s",
@@ -84,6 +96,8 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         except ClientError as err:
             raise UpdateFailed(f"Error communicating with API: {err}") from err
         except Exception as err:
+            if isinstance(err, UpdateFailed):
+                raise
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
 
@@ -94,13 +108,22 @@ class PrusaConnectJobCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     active/current job dict for that printer.
     """
 
-    def __init__(self, hass: HomeAssistant, api: PrusaConnectAPI) -> None:
+    config_entry: PrusaConnectConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: PrusaConnectConfigEntry,
+        api: PrusaConnectAPI,
+    ) -> None:
         """Initialize the job coordinator."""
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=f"{DOMAIN}_jobs",
             update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            always_update=False,
         )
         self.api = api
 
@@ -129,6 +152,8 @@ class PrusaConnectJobCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         except ClientError as err:
             raise UpdateFailed(f"Error communicating with API: {err}") from err
         except Exception as err:
+            if isinstance(err, UpdateFailed):
+                raise
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
 

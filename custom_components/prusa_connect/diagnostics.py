@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DATA_JOB_COORDINATOR, DATA_PRINTER_COORDINATOR, DOMAIN
+from . import PrusaConnectConfigEntry
 
 
 def _redact_printer(printer: dict) -> dict:
@@ -38,22 +37,19 @@ def _redact_printer(printer: dict) -> dict:
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: ConfigEntry
+    hass: HomeAssistant, entry: PrusaConnectConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-
-    printer_coordinator = data.get(DATA_PRINTER_COORDINATOR)
-    job_coordinator = data.get(DATA_JOB_COORDINATOR)
+    data = entry.runtime_data
 
     printers = {}
-    if printer_coordinator and printer_coordinator.data:
-        for uuid, printer in printer_coordinator.data.items():
+    if data.printer_coordinator.data:
+        for uuid, printer in data.printer_coordinator.data.items():
             printers[uuid] = _redact_printer(printer)
 
     jobs = {}
-    if job_coordinator and job_coordinator.data:
-        for uuid, job in job_coordinator.data.items():
+    if data.job_coordinator.data:
+        for uuid, job in data.job_coordinator.data.items():
             redacted_job = dict(job)
             if "thumbnailUrl" in redacted_job and redacted_job["thumbnailUrl"]:
                 redacted_job["thumbnailUrl"] = "**REDACTED_URL**"

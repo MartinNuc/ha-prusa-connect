@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import aiohttp
 from homeassistant.components.camera import Camera
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import PrusaConnectConfigEntry
-from .const import DATA_PRINTER_COORDINATOR, DOMAIN
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
+
+if TYPE_CHECKING:
+    from . import PrusaConnectConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,12 +30,14 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         self,
         coordinator: PrusaConnectPrinterCoordinator,
         printer_uuid: str,
+        hass: HomeAssistant,
         camera_index: int = 0,
     ) -> None:
         """Initialize the camera entity."""
         PrusaConnectEntity.__init__(self, coordinator, printer_uuid)
         Camera.__init__(self)
         self._camera_index = camera_index
+        self._hass = hass
         suffix = f"_camera_{camera_index}" if camera_index > 0 else "_camera"
         self._attr_unique_id = f"{printer_uuid}{suffix}"
         self._attr_frame_interval = 30
@@ -60,17 +65,23 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
 
         try:
             # Prusa snapshot URLs are pre-signed, no auth needed
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
-                    _LOGGER.debug(
-                        "Failed to fetch snapshot for %s: HTTP %s",
-                        self._printer_uuid,
-                        resp.status,
-                    )
+            session = async_get_clientsession(self._hass)
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                _LOGGER.debug(
+                    "Failed to fetch snapshot for %s: HTTP %s",
+                    self._printer_uuid,
+                    resp.status,
+                )
         except (aiohttp.ClientError, TimeoutError) as err:
-            _LOGGER.debug("Error fetching snapshot for %s: %s", self._printer_uuid, err)
+            _LOGGER.debug(
+                "Error fetching snapshot for %s: %s",
+                self._printer_uuid,
+                err,
+            )
 
         return None
 
@@ -85,11 +96,10 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: PrusaConnectConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Prusa Connect cameras."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    printer_coordinator: PrusaConnectPrinterCoordinator = data[DATA_PRINTER_COORDINATOR]
+    printer_coordinator = entry.runtime_data.printer_coordinator
 
     entities: list[PrusaConnectCamera] = []
 
@@ -98,7 +108,9 @@ async def async_setup_entry(
         if cameras:
             for idx in range(len(cameras)):
                 entities.append(
-                    PrusaConnectCamera(printer_coordinator, printer_uuid, idx)
+                    PrusaConnectCamera(
+                        printer_coordinator, printer_uuid, hass, idx
+                    )
                 )
         else:
             # Create a single camera entity using the top-level snapshot URL
@@ -107,7 +119,9 @@ async def async_setup_entry(
             )
             if snapshot_url:
                 entities.append(
-                    PrusaConnectCamera(printer_coordinator, printer_uuid)
+                    PrusaConnectCamera(
+                        printer_coordinator, printer_uuid, hass
+                    )
                 )
 
     async_add_entities(entities)

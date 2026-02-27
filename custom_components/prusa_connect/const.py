@@ -24,11 +24,6 @@ DEFAULT_SCAN_INTERVAL: Final = 30  # seconds
 FAST_SCAN_INTERVAL: Final = 5  # seconds
 FAST_SCAN_DURATION: Final = 30  # seconds
 
-# Data keys stored in hass.data[DOMAIN][entry.entry_id]
-DATA_API: Final = "api"
-DATA_PRINTER_COORDINATOR: Final = "printer_coordinator"
-DATA_JOB_COORDINATOR: Final = "job_coordinator"
-
 MANUFACTURER: Final = "Prusa Research"
 CONFIGURATION_URL: Final = "https://connect.prusa3d.com"
 

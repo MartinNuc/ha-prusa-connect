@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -13,15 +13,23 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfLength, UnitOfTemperature, UnitOfTime
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfLength,
+    UnitOfTemperature,
+    UnitOfTime,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from . import PrusaConnectConfigEntry
-from .const import DATA_JOB_COORDINATOR, DATA_PRINTER_COORDINATOR, DOMAIN, JobState, PrinterState
+from .const import DOMAIN, JobState, PrinterState
 from .coordinator import PrusaConnectJobCoordinator, PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
+
+if TYPE_CHECKING:
+    from . import PrusaConnectConfigEntry
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -33,6 +41,16 @@ class PrusaConnectSensorEntityDescription(SensorEntityDescription):
     exists_fn: Callable[[dict], bool] = lambda data: True
 
 
+def _get_telemetry_value(telemetry: dict, key: str) -> str | None:
+    """Get telemetry value, trying both underscore and hyphenated keys."""
+    val = telemetry.get(key)
+    if val is not None:
+        return val
+    # Try the alternate key format (underscore <-> hyphen)
+    alt_key = key.replace("_", "-") if "_" in key else key.replace("-", "_")
+    return telemetry.get(alt_key)
+
+
 def _get_telemetry_float(
     key: str,
 ) -> Callable[[dict, dict | None], StateType | None]:
@@ -40,7 +58,7 @@ def _get_telemetry_float(
 
     def _fn(printer: dict, job: dict | None) -> StateType | None:
         telemetry = printer.get("telemetry") or {}
-        val = telemetry.get(key)
+        val = _get_telemetry_value(telemetry, key)
         if val is None:
             return None
         try:
@@ -58,7 +76,7 @@ def _get_telemetry_int(
 
     def _fn(printer: dict, job: dict | None) -> StateType | None:
         telemetry = printer.get("telemetry") or {}
-        val = telemetry.get(key)
+        val = _get_telemetry_value(telemetry, key)
         if val is None:
             return None
         try:
@@ -69,15 +87,40 @@ def _get_telemetry_int(
     return _fn
 
 
+def _parse_progress(job: dict | None) -> StateType | None:
+    """Parse job progress, handling both 0-1 and 0-100 formats."""
+    if not job:
+        return None
+    val = job.get("progress")
+    if val is None:
+        return None
+    try:
+        progress = float(val)
+    except (ValueError, TypeError):
+        return None
+    # If value is <= 1.0, assume it's a fraction (0.0-1.0); convert to percent
+    if progress <= 1.0:
+        progress = progress * 100
+    return round(min(progress, 100.0), 1)
+
+
+def _safe_state(value: str | None, valid: set[str]) -> str | None:
+    """Return the value only if it's in the valid set, else UNKNOWN."""
+    if value is None:
+        return None
+    return value if value in valid else "UNKNOWN"
+
+
 def _compute_time_remaining(printer: dict, job: dict | None) -> StateType | None:
     """Compute time remaining for current job in seconds."""
     if not job:
         return None
-    # Try direct field first
     remaining = job.get("timeRemaining")
     if remaining is not None:
-        return int(remaining)
-    # Compute from estimated end and current time
+        try:
+            return int(remaining)
+        except (ValueError, TypeError):
+            pass
     end_str = job.get("estimatedEnd")
     if end_str:
         try:
@@ -105,13 +148,16 @@ def _compute_time_elapsed(printer: dict, job: dict | None) -> StateType | None:
         return None
 
 
+_PRINTER_STATES = {s.value for s in PrinterState}
+_JOB_STATES = {s.value for s in JobState}
+
 SENSOR_DESCRIPTIONS: tuple[PrusaConnectSensorEntityDescription, ...] = (
     PrusaConnectSensorEntityDescription(
         key="state",
         translation_key="state",
         device_class=SensorDeviceClass.ENUM,
         options=[s.value for s in PrinterState],
-        value_fn=lambda p, j: p.get("state", PrinterState.UNKNOWN),
+        value_fn=lambda p, j: _safe_state(p.get("state"), _PRINTER_STATES),
     ),
     PrusaConnectSensorEntityDescription(
         key="nozzle_temperature",
@@ -187,24 +233,24 @@ SENSOR_DESCRIPTIONS: tuple[PrusaConnectSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:progress-check",
-        value_fn=lambda p, j: (
-            round(j["progress"] * 100, 1)
-            if j and j.get("progress") is not None
-            else None
-        ),
+        value_fn=lambda p, j: _parse_progress(j),
     ),
     PrusaConnectSensorEntityDescription(
         key="current_job",
         translation_key="current_job",
         icon="mdi:file-document",
-        value_fn=lambda p, j: j.get("fileName") or j.get("displayName") if j else None,
+        value_fn=lambda p, j: (
+            j.get("fileName") or j.get("displayName") if j else None
+        ),
     ),
     PrusaConnectSensorEntityDescription(
         key="job_state",
         translation_key="job_state",
         device_class=SensorDeviceClass.ENUM,
         options=[s.value for s in JobState],
-        value_fn=lambda p, j: j.get("state", JobState.UNKNOWN) if j else None,
+        value_fn=lambda p, j: (
+            _safe_state(j.get("state"), _JOB_STATES) if j else None
+        ),
     ),
     PrusaConnectSensorEntityDescription(
         key="time_remaining",
@@ -263,10 +309,28 @@ class PrusaConnectSensor(PrusaConnectEntity, SensorEntity):
         self._job_coordinator = job_coordinator
         self._attr_unique_id = f"{printer_uuid}_{description.key}"
 
+    async def async_added_to_hass(self) -> None:
+        """Register listeners for both coordinators."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._job_coordinator.async_add_listener(
+                self._handle_coordinator_update
+            )
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from either coordinator."""
+        self.async_write_ha_state()
+
     @property
     def native_value(self) -> StateType | datetime | None:
         """Return the sensor value."""
-        job = self._job_coordinator.data.get(self._printer_uuid)
+        job = (
+            self._job_coordinator.data.get(self._printer_uuid)
+            if self._job_coordinator.data
+            else None
+        )
         return self.entity_description.value_fn(self._printer_data, job)
 
     @property
@@ -280,12 +344,12 @@ class PrusaConnectSensor(PrusaConnectEntity, SensorEntity):
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: PrusaConnectConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Prusa Connect sensors."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    printer_coordinator: PrusaConnectPrinterCoordinator = data[DATA_PRINTER_COORDINATOR]
-    job_coordinator: PrusaConnectJobCoordinator = data[DATA_JOB_COORDINATOR]
+    data = entry.runtime_data
+    printer_coordinator = data.printer_coordinator
+    job_coordinator = data.job_coordinator
 
     entities: list[PrusaConnectSensor] = []
 

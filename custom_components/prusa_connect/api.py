@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -12,6 +13,8 @@ from .auth import AuthenticationError, refresh_access_token
 from .const import API_BASE_URL
 
 _LOGGER = logging.getLogger(__name__)
+
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 class PrusaConnectAPI:
@@ -29,6 +32,7 @@ class PrusaConnectAPI:
         self._access_token = access_token
         self._refresh_token = refresh_token
         self._token_update_callback = token_update_callback
+        self._refresh_lock = asyncio.Lock()
 
     def update_tokens(
         self, access_token: str, refresh_token: str
@@ -56,7 +60,13 @@ class PrusaConnectAPI:
         headers = {"Authorization": f"Bearer {self._access_token}"}
 
         async with self._session.request(
-            method, url, headers=headers, json=json, data=data, params=params
+            method,
+            url,
+            headers=headers,
+            json=json,
+            data=data,
+            params=params,
+            timeout=REQUEST_TIMEOUT,
         ) as resp:
             if resp.status == 401 and retry_on_401:
                 # Try to refresh the token
@@ -71,7 +81,9 @@ class PrusaConnectAPI:
                 )
 
             if resp.status == 401:
-                raise ConfigEntryAuthFailed("Authentication failed after token refresh")
+                raise ConfigEntryAuthFailed(
+                    "Authentication failed after token refresh"
+                )
 
             if resp.status == 204:
                 return None
@@ -87,18 +99,24 @@ class PrusaConnectAPI:
             return result
 
     async def _refresh_token_and_persist(self) -> None:
-        """Refresh the access token and persist the new tokens."""
-        try:
-            tokens = await refresh_access_token(self._session, self._refresh_token)
-            self._access_token = tokens["access_token"]
-            self._refresh_token = tokens["refresh_token"]
+        """Refresh the access token and persist the new tokens.
 
-            if self._token_update_callback:
-                await self._token_update_callback(tokens)
-        except AuthenticationError as err:
-            raise ConfigEntryAuthFailed(
-                "Token refresh failed — re-authentication required"
-            ) from err
+        Uses a lock to prevent concurrent refresh attempts from racing.
+        """
+        async with self._refresh_lock:
+            try:
+                tokens = await refresh_access_token(
+                    self._session, self._refresh_token
+                )
+                self._access_token = tokens["access_token"]
+                self._refresh_token = tokens["refresh_token"]
+
+                if self._token_update_callback:
+                    await self._token_update_callback(tokens)
+            except AuthenticationError as err:
+                raise ConfigEntryAuthFailed(
+                    "Token refresh failed — re-authentication required"
+                ) from err
 
     # --- User ---
 
@@ -118,7 +136,9 @@ class PrusaConnectAPI:
 
     async def update_printer(self, uuid: str, data: dict) -> dict:
         """Update printer settings."""
-        return await self._request("PATCH", f"/app/prusa/v1/printers/{uuid}", json=data)
+        return await self._request(
+            "PATCH", f"/app/prusa/v1/printers/{uuid}", json=data
+        )
 
     # --- Commands ---
 
@@ -226,7 +246,9 @@ class PrusaConnectAPI:
 
     async def get_jobs(self, **params: Any) -> list[dict]:
         """Get jobs, optionally filtered by query params."""
-        return await self._request("GET", "/app/prusa/v1/jobs", params=params or None)
+        return await self._request(
+            "GET", "/app/prusa/v1/jobs", params=params or None
+        )
 
     async def get_job(self, job_id: int) -> dict:
         """Get a specific job by ID."""
@@ -264,24 +286,32 @@ class PrusaConnectAPI:
 
     async def get_unseen_count(self) -> int:
         """Get the count of unseen notifications."""
-        result = await self._request("GET", "/app/prusa/v1/notifications/unseen-count")
+        result = await self._request(
+            "GET", "/app/prusa/v1/notifications/unseen-count"
+        )
         if isinstance(result, dict):
             return result.get("count", 0)
         return 0
 
     async def mark_all_read(self) -> None:
         """Mark all notifications as read."""
-        await self._request("POST", "/app/prusa/v1/notifications/mark-all-read")
+        await self._request(
+            "POST", "/app/prusa/v1/notifications/mark-all-read"
+        )
 
     # --- Storage ---
 
     async def get_cloud_files(self, team_id: int) -> list[dict]:
         """Get cloud storage files for a team."""
-        return await self._request("GET", f"/app/prusa/v1/teams/{team_id}/files")
+        return await self._request(
+            "GET", f"/app/prusa/v1/teams/{team_id}/files"
+        )
 
     async def get_printer_files(self, uuid: str) -> list[dict]:
         """Get files on the printer's USB storage."""
-        return await self._request("GET", f"/app/prusa/v1/printers/{uuid}/files")
+        return await self._request(
+            "GET", f"/app/prusa/v1/printers/{uuid}/files"
+        )
 
     # --- Teams ---
 
@@ -295,4 +325,6 @@ class PrusaConnectAPI:
 
     async def get_team_members(self, team_id: int) -> list[dict]:
         """Get members of a team."""
-        return await self._request("GET", f"/app/prusa/v1/teams/{team_id}/members")
+        return await self._request(
+            "GET", f"/app/prusa/v1/teams/{team_id}/members"
+        )

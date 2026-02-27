@@ -26,6 +26,8 @@ class PrusaConnectEntity(CoordinatorEntity[PrusaConnectPrinterCoordinator]):
     @property
     def _printer_data(self) -> dict:
         """Return the printer data from the coordinator."""
+        if self.coordinator.data is None:
+            return {}
         return self.coordinator.data.get(self._printer_uuid, {})
 
     @property

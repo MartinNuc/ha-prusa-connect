@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -12,12 +13,13 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import PrusaConnectConfigEntry
-from .const import DATA_PRINTER_COORDINATOR, DOMAIN
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
+
+if TYPE_CHECKING:
+    from . import PrusaConnectConfigEntry
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -28,7 +30,9 @@ class PrusaConnectBinarySensorEntityDescription(BinarySensorEntityDescription):
     exists_fn: Callable[[dict], bool] = lambda data: True
 
 
-BINARY_SENSOR_DESCRIPTIONS: tuple[PrusaConnectBinarySensorEntityDescription, ...] = (
+BINARY_SENSOR_DESCRIPTIONS: tuple[
+    PrusaConnectBinarySensorEntityDescription, ...
+] = (
     PrusaConnectBinarySensorEntityDescription(
         key="online",
         translation_key="online",
@@ -92,11 +96,10 @@ class PrusaConnectBinarySensor(PrusaConnectEntity, BinarySensorEntity):
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: PrusaConnectConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Prusa Connect binary sensors."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    printer_coordinator: PrusaConnectPrinterCoordinator = data[DATA_PRINTER_COORDINATOR]
+    printer_coordinator = entry.runtime_data.printer_coordinator
 
     entities: list[PrusaConnectBinarySensor] = []
 

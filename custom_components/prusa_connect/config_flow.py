@@ -9,6 +9,8 @@ import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.data_entry_flow import AbortFlow
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import PrusaConnectAPI
 from .auth import (
@@ -61,6 +63,9 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
             except AuthenticationError:
                 errors["base"] = "cannot_connect"
 
+            except AbortFlow:
+                raise
+
             except Exception:
                 _LOGGER.exception("Unexpected error during authentication")
                 errors["base"] = "unknown"
@@ -98,8 +103,13 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
             except AuthenticationError:
                 errors["base"] = "cannot_connect"
 
+            except AbortFlow:
+                raise
+
             except Exception:
-                _LOGGER.exception("Unexpected error during TOTP authentication")
+                _LOGGER.exception(
+                    "Unexpected error during TOTP authentication"
+                )
                 errors["base"] = "unknown"
 
         return self.async_show_form(
@@ -125,6 +135,7 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            self._email = user_input[CONF_EMAIL]
             try:
                 async with aiohttp.ClientSession() as session:
                     tokens = await authenticate(
@@ -132,31 +143,11 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
                         user_input[CONF_EMAIL],
                         user_input[CONF_PASSWORD],
                     )
+                return await self._async_finish_reauth(tokens)
 
-                # Get user info to verify
-                async with aiohttp.ClientSession() as session:
-                    api = PrusaConnectAPI(
-                        session,
-                        tokens["access_token"],
-                        tokens["refresh_token"],
-                    )
-                    user = await api.get_user()
-
-                reauth_entry = self._get_reauth_entry()
-                return self.async_update_reload_and_abort(
-                    reauth_entry,
-                    data={
-                        **reauth_entry.data,
-                        CONF_ACCESS_TOKEN: tokens["access_token"],
-                        CONF_REFRESH_TOKEN: tokens["refresh_token"],
-                        CONF_USER_ID: user.get("id"),
-                    },
-                )
-
-            except TotpRequiredError:
-                # For reauth with TOTP, we'd need the full flow
-                # For simplicity, just show an error
-                errors["base"] = "totp_not_supported_reauth"
+            except TotpRequiredError as err:
+                self._totp_session_data = err.session_data
+                return await self.async_step_reauth_totp()
 
             except InvalidCredentialsError:
                 errors["base"] = "invalid_auth"
@@ -164,8 +155,13 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
             except AuthenticationError:
                 errors["base"] = "cannot_connect"
 
+            except AbortFlow:
+                raise
+
             except Exception:
-                _LOGGER.exception("Unexpected error during reauthentication")
+                _LOGGER.exception(
+                    "Unexpected error during reauthentication"
+                )
                 errors["base"] = "unknown"
 
         return self.async_show_form(
@@ -179,15 +175,56 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_reauth_totp(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle TOTP during reauthentication."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    tokens = await authenticate_totp(
+                        session,
+                        user_input["totp_code"],
+                        self._totp_session_data,
+                    )
+                return await self._async_finish_reauth(tokens)
+
+            except TotpInvalidError:
+                errors["base"] = "invalid_totp"
+
+            except AuthenticationError:
+                errors["base"] = "cannot_connect"
+
+            except AbortFlow:
+                raise
+
+            except Exception:
+                _LOGGER.exception(
+                    "Unexpected error during TOTP reauthentication"
+                )
+                errors["base"] = "unknown"
+
+        return self.async_show_form(
+            step_id="reauth_totp",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("totp_code"): str,
+                }
+            ),
+            errors=errors,
+        )
+
     async def _async_finish_login(self, tokens: dict) -> ConfigFlowResult:
         """Fetch user info and create the config entry."""
-        async with aiohttp.ClientSession() as session:
-            api = PrusaConnectAPI(
-                session,
-                tokens["access_token"],
-                tokens["refresh_token"],
-            )
-            user = await api.get_user()
+        session = async_get_clientsession(self.hass)
+        api = PrusaConnectAPI(
+            session,
+            tokens["access_token"],
+            tokens["refresh_token"],
+        )
+        user = await api.get_user()
 
         user_id = str(user.get("id", ""))
         await self.async_set_unique_id(user_id)
@@ -196,6 +233,29 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(
             title=user.get("email", self._email or "Prusa Connect"),
             data={
+                CONF_ACCESS_TOKEN: tokens["access_token"],
+                CONF_REFRESH_TOKEN: tokens["refresh_token"],
+                CONF_USER_ID: user_id,
+            },
+        )
+
+    async def _async_finish_reauth(self, tokens: dict) -> ConfigFlowResult:
+        """Update the existing config entry with new tokens."""
+        session = async_get_clientsession(self.hass)
+        api = PrusaConnectAPI(
+            session,
+            tokens["access_token"],
+            tokens["refresh_token"],
+        )
+        user = await api.get_user()
+
+        user_id = str(user.get("id", ""))
+        await self.async_set_unique_id(user_id)
+        self._abort_if_unique_id_mismatch()
+
+        return self.async_update_reload_and_abort(
+            self._get_reauth_entry(),
+            data_updates={
                 CONF_ACCESS_TOKEN: tokens["access_token"],
                 CONF_REFRESH_TOKEN: tokens["refresh_token"],
                 CONF_USER_ID: user_id,
