@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import aiohttp
 from homeassistant.components.camera import Camera
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .api import PrusaConnectAPI
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
 
@@ -19,78 +18,37 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Connect stores the latest frame pushed by the camera; the common trigger
+# scheme uploads every 30 seconds, so polling faster gains nothing.
+FRAME_INTERVAL = 30.0
+
 
 class PrusaConnectCamera(PrusaConnectEntity, Camera):
-    """Camera entity showing the printer's latest snapshot."""
+    """Camera entity serving the latest snapshot stored in Connect."""
 
-    _attr_translation_key = "camera"
     _attr_is_streaming = False
 
     def __init__(
         self,
         coordinator: PrusaConnectPrinterCoordinator,
+        api: PrusaConnectAPI,
         printer_uuid: str,
-        hass: HomeAssistant,
-        camera_index: int = 0,
+        camera: dict,
     ) -> None:
         """Initialize the camera entity."""
         PrusaConnectEntity.__init__(self, coordinator, printer_uuid)
         Camera.__init__(self)
-        self._camera_index = camera_index
-        self._hass = hass
-        suffix = f"_camera_{camera_index}" if camera_index > 0 else "_camera"
-        self._attr_unique_id = f"{printer_uuid}{suffix}"
-        self._attr_frame_interval = 30
-
-    def _get_snapshot_url(self) -> str | None:
-        """Get the snapshot URL from printer data."""
-        printer = self._printer_data
-
-        # Try cameras list first
-        cameras = printer.get("cameras") or []
-        if cameras and self._camera_index < len(cameras):
-            cam = cameras[self._camera_index]
-            return cam.get("snapshotUrl") or cam.get("imageUrl")
-
-        # Fall back to top-level snapshot URL
-        return printer.get("snapshotUrl") or printer.get("cameraUrl")
+        self._api = api
+        self._camera_id = camera["id"]
+        self._attr_name = camera.get("name") or "Camera"
+        self._attr_unique_id = f"{printer_uuid}_camera_{self._camera_id}"
+        self._attr_frame_interval = FRAME_INTERVAL
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return the current camera snapshot as bytes."""
-        url = self._get_snapshot_url()
-        if not url:
-            return None
-
-        try:
-            # Prusa snapshot URLs are pre-signed, no auth needed
-            session = async_get_clientsession(self._hass)
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                _LOGGER.debug(
-                    "Failed to fetch snapshot for %s: HTTP %s",
-                    self._printer_uuid,
-                    resp.status,
-                )
-        except (aiohttp.ClientError, TimeoutError) as err:
-            _LOGGER.debug(
-                "Error fetching snapshot for %s: %s",
-                self._printer_uuid,
-                err,
-            )
-
-        return None
-
-    @property
-    def available(self) -> bool:
-        """Return True if we have a snapshot URL."""
-        if not super().available:
-            return False
-        return self._get_snapshot_url() is not None
+        """Return the most recent snapshot as bytes."""
+        return await self._api.get_camera_snapshot(self._camera_id)
 
 
 async def async_setup_entry(
@@ -99,29 +57,25 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Prusa Connect cameras."""
-    printer_coordinator = entry.runtime_data.printer_coordinator
+    data = entry.runtime_data
+    printer_coordinator = data.printer_coordinator
 
     entities: list[PrusaConnectCamera] = []
 
-    for printer_uuid, printer_data in printer_coordinator.data.items():
-        cameras = printer_data.get("cameras") or []
-        if cameras:
-            for idx in range(len(cameras)):
-                entities.append(
-                    PrusaConnectCamera(
-                        printer_coordinator, printer_uuid, hass, idx
-                    )
-                )
-        else:
-            # Create a single camera entity using the top-level snapshot URL
-            snapshot_url = printer_data.get("snapshotUrl") or printer_data.get(
-                "cameraUrl"
+    for printer_uuid in printer_coordinator.data:
+        try:
+            cameras = await data.api.get_printer_cameras(printer_uuid)
+        except Exception as err:  # noqa: BLE001 - one bad printer must not
+            # prevent the remaining platforms from loading.
+            _LOGGER.warning(
+                "Could not list cameras for printer %s: %s", printer_uuid, err
             )
-            if snapshot_url:
-                entities.append(
-                    PrusaConnectCamera(
-                        printer_coordinator, printer_uuid, hass
-                    )
-                )
+            continue
+
+        entities.extend(
+            PrusaConnectCamera(printer_coordinator, data.api, printer_uuid, camera)
+            for camera in cameras
+            if camera.get("id") is not None
+        )
 
     async_add_entities(entities)

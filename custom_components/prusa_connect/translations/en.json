@@ -73,7 +73,6 @@
       "online": { "name": "Online" },
       "printing": { "name": "Printing" },
       "attention_required": { "name": "Attention Required" },
-      "mmu_enabled": { "name": "MMU" },
       "enclosure": { "name": "Enclosure" }
     },
     "button": {
@@ -82,9 +81,6 @@
       "stop_print": { "name": "Stop Print" },
       "set_ready": { "name": "Set Ready" },
       "cancel_ready": { "name": "Cancel Ready" }
-    },
-    "camera": {
-      "camera": { "name": "Camera" }
     },
     "image": {
       "print_preview": { "name": "Print Preview" }
@@ -103,40 +99,6 @@
       "name": "Stop Print",
       "description": "Stop the current print."
     },
-    "start_print_cloud": {
-      "name": "Start Print (Cloud)",
-      "description": "Start a print from cloud storage.",
-      "fields": {
-        "file_hash": {
-          "name": "File Hash",
-          "description": "The hash of the file to print."
-        },
-        "team_id": {
-          "name": "Team ID",
-          "description": "The ID of the team that owns the file."
-        }
-      }
-    },
-    "start_print_usb": {
-      "name": "Start Print (USB)",
-      "description": "Start a print from USB storage.",
-      "fields": {
-        "path": {
-          "name": "File Path",
-          "description": "Path to the file on USB storage."
-        }
-      }
-    },
-    "start_print_url": {
-      "name": "Start Print (URL)",
-      "description": "Start a print from a URL.",
-      "fields": {
-        "file_url": {
-          "name": "File URL",
-          "description": "URL of the file to print (e.g. from Printables)."
-        }
-      }
-    },
     "set_ready": {
       "name": "Set Ready",
       "description": "Mark the printer as ready after a finished print."
@@ -144,6 +106,16 @@
     "cancel_ready": {
       "name": "Cancel Ready",
       "description": "Cancel the ready state."
+    },
+    "start_print": {
+      "name": "Start Print",
+      "description": "Start printing a file already available to the printer.",
+      "fields": {
+        "path": {
+          "name": "File Path",
+          "description": "Path to the file on the printer, e.g. /usb/BENCHY~1.BGC."
+        }
+      }
     },
     "respond_to_dialog": {
       "name": "Respond to Dialog",

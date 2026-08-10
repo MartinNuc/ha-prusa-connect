@@ -31,9 +31,14 @@ class PrusaConnectEntity(CoordinatorEntity[PrusaConnectPrinterCoordinator]):
         return self.coordinator.data.get(self._printer_uuid, {})
 
     @property
-    def _telemetry(self) -> dict:
-        """Return telemetry data from the printer."""
-        return self._printer_data.get("telemetry", {}) or {}
+    def _temp(self) -> dict:
+        """Return the printer's temperature block."""
+        return self._printer_data.get("temp") or {}
+
+    @property
+    def _job_info(self) -> dict:
+        """Return live job info, present on the detail document while printing."""
+        return self._printer_data.get("job_info") or {}
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -43,8 +48,8 @@ class PrusaConnectEntity(CoordinatorEntity[PrusaConnectPrinterCoordinator]):
             identifiers={(DOMAIN, self._printer_uuid)},
             name=printer.get("name", f"Prusa Printer {self._printer_uuid[:8]}"),
             manufacturer=MANUFACTURER,
-            model=printer.get("printerType") or printer.get("printerTypeName"),
+            model=printer.get("printer_type_name") or printer.get("printer_model"),
             sw_version=printer.get("firmware"),
-            serial_number=printer.get("serialNumber"),
+            serial_number=printer.get("sn"),
             configuration_url=CONFIGURATION_URL,
         )

@@ -13,42 +13,6 @@ stop_print:
     device:
       integration: prusa_connect
 
-start_print_cloud:
-  target:
-    device:
-      integration: prusa_connect
-  fields:
-    file_hash:
-      required: true
-      selector:
-        text:
-    team_id:
-      required: true
-      selector:
-        number:
-          mode: box
-          min: 0
-
-start_print_usb:
-  target:
-    device:
-      integration: prusa_connect
-  fields:
-    path:
-      required: true
-      selector:
-        text:
-
-start_print_url:
-  target:
-    device:
-      integration: prusa_connect
-  fields:
-    file_url:
-      required: true
-      selector:
-        text:
-
 set_ready:
   target:
     device:
@@ -59,6 +23,17 @@ cancel_ready:
     device:
       integration: prusa_connect
 
+start_print:
+  target:
+    device:
+      integration: prusa_connect
+  fields:
+    path:
+      required: true
+      example: /usb/BENCHY~1.BGC
+      selector:
+        text:
+
 respond_to_dialog:
   target:
     device:
@@ -66,11 +41,13 @@ respond_to_dialog:
   fields:
     dialog_id:
       required: true
+      example: 1
       selector:
         number:
           mode: box
           min: 0
     button:
       required: true
+      example: YES
       selector:
         text:

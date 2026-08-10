@@ -21,12 +21,15 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Job states that mean a print is currently on the bed.
+ACTIVE_JOB_STATES = {"PRINTING", "PAUSED"}
+
 
 class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     """Coordinator for polling printer data.
 
-    Data shape: dict keyed by printer UUID, each value is the full printer
-    detail dict (including telemetry).
+    Data shape: dict keyed by printer UUID. Each value is the printer's list
+    entry merged with its detail document, so entities can read either.
     """
 
     config_entry: PrusaConnectConfigEntry
@@ -52,13 +55,11 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     def expect_change(self) -> None:
         """Speed up polling temporarily after a command."""
         self._fast_poll_until = time.monotonic() + FAST_SCAN_DURATION
-        # Update the interval immediately
         if time.monotonic() < self._fast_poll_until:
             self.update_interval = timedelta(seconds=FAST_SCAN_INTERVAL)
 
     async def _async_update_data(self) -> dict[str, dict]:
         """Fetch printer data from the API."""
-        # Restore normal interval if fast poll window expired
         if (
             time.monotonic() >= self._fast_poll_until
             and self.update_interval != timedelta(seconds=DEFAULT_SCAN_INTERVAL)
@@ -68,7 +69,6 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         try:
             printers = await self.api.get_printers()
 
-            # Fetch detailed info for each printer in parallel
             tasks = [self.api.get_printer(p["uuid"]) for p in printers]
             details = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -76,18 +76,16 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             for printer, detail in zip(printers, details):
                 uuid = printer["uuid"]
                 if isinstance(detail, ConfigEntryAuthFailed):
-                    # Auth failure must propagate to trigger reauth
                     raise detail
                 if isinstance(detail, Exception):
                     _LOGGER.warning(
-                        "Failed to fetch detail for printer %s: %s",
-                        uuid,
-                        detail,
+                        "Failed to fetch detail for printer %s: %s", uuid, detail
                     )
-                    # Fall back to the basic printer data
                     result[uuid] = printer
                 else:
-                    result[uuid] = detail
+                    # Detail wins, but the list entry carries fields the detail
+                    # document omits (name, team, model marketing name).
+                    result[uuid] = {**printer, **detail}
 
             return result
 
@@ -104,8 +102,8 @@ class PrusaConnectPrinterCoordinator(DataUpdateCoordinator[dict[str, dict]]):
 class PrusaConnectJobCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     """Coordinator for polling job data.
 
-    Data shape: dict keyed by printer UUID, each value is the most recent
-    active/current job dict for that printer.
+    Data shape: dict keyed by printer UUID holding that printer's current (or
+    most recent) job.
     """
 
     config_entry: PrusaConnectConfigEntry
@@ -132,12 +130,9 @@ class PrusaConnectJobCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         try:
             jobs = await self.api.get_jobs()
 
-            # Group jobs by printer UUID, keeping the most recent per printer
             result: dict[str, dict] = {}
             for job in jobs:
-                printer_uuid = job.get("printerUuid") or job.get("printer", {}).get(
-                    "uuid"
-                )
+                printer_uuid = job.get("printer_uuid")
                 if not printer_uuid:
                     continue
 
@@ -158,15 +153,11 @@ class PrusaConnectJobCoordinator(DataUpdateCoordinator[dict[str, dict]]):
 
 
 def _job_is_more_recent(job_a: dict, job_b: dict) -> bool:
-    """Check if job_a is more recent than job_b."""
-    # Prefer active jobs (PRINTING, PAUSED) over completed ones
-    active_states = {"PRINTING", "PAUSED"}
-    a_active = job_a.get("state") in active_states
-    b_active = job_b.get("state") in active_states
-    if a_active and not b_active:
-        return True
-    if b_active and not a_active:
-        return False
+    """Check if job_a should replace job_b as the printer's current job."""
+    a_active = job_a.get("state") in ACTIVE_JOB_STATES
+    b_active = job_b.get("state") in ACTIVE_JOB_STATES
+    if a_active != b_active:
+        return a_active
 
-    # Otherwise compare by ID (higher = more recent)
-    return (job_a.get("id") or 0) > (job_b.get("id") or 0)
+    # Otherwise the one that started later wins.
+    return (job_a.get("start") or 0) > (job_b.get("start") or 0)

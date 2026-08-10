@@ -1,9 +1,11 @@
-"""OAuth2 PKCE authentication for Prusa Connect."""
+"""OAuth2 PKCE authentication against Prusa Account."""
 
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
+import json
 import logging
 import os
 import re
@@ -14,7 +16,6 @@ import aiohttp
 from .const import (
     AUTH_AUTHORIZE_URL,
     AUTH_CLIENT_ID,
-    AUTH_LOGIN_URL,
     AUTH_REDIRECT_URI,
     AUTH_SCOPE,
     AUTH_TOKEN_URL,
@@ -53,7 +54,7 @@ def _generate_pkce() -> tuple[str, str]:
 
 
 def _extract_csrf_token(html: str) -> str | None:
-    """Extract CSRF token from login form HTML."""
+    """Extract the CSRF token from a Prusa Account form."""
     match = re.search(
         r'<input[^>]+name=["\']csrfmiddlewaretoken["\'][^>]+value=["\']([^"\']+)',
         html,
@@ -61,9 +62,30 @@ def _extract_csrf_token(html: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _extract_totp_token(html: str) -> str | None:
-    """Extract CSRF token from TOTP form HTML."""
-    return _extract_csrf_token(html)
+def _is_totp_page(url: str, html: str) -> bool:
+    """Detect the two-factor form.
+
+    Matches on the OTP input field rather than the word "totp" appearing
+    anywhere in the page, which is unreliable on a large marketing-heavy page.
+    """
+    if "otp" in urlparse(url).path.lower():
+        return True
+    return re.search(r'<input[^>]+name=["\']otp_token["\']', html) is not None
+
+
+def decode_id_token(id_token: str) -> dict:
+    """Decode the (already server-validated) id_token payload.
+
+    Connect has no user endpoint, so account identity comes from this claim set.
+    The token is only used for its user id here — it arrives over TLS directly
+    from the token endpoint, so it is not re-verified locally.
+    """
+    try:
+        payload = id_token.split(".")[1]
+        padded = payload + "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except (IndexError, ValueError, binascii.Error, UnicodeDecodeError) as err:
+        raise AuthenticationError(f"Could not decode id_token: {err}") from err
 
 
 async def authenticate(
@@ -73,13 +95,11 @@ async def authenticate(
 ) -> dict:
     """Authenticate with Prusa Account and return tokens.
 
-    Returns dict with access_token and refresh_token.
-    Raises TotpRequiredError if 2FA is enabled.
-    Raises InvalidCredentialsError if credentials are wrong.
+    Raises TotpRequiredError if 2FA is enabled, InvalidCredentialsError if the
+    credentials are rejected.
     """
     code_verifier, code_challenge = _generate_pkce()
 
-    # Step 1: Start OAuth flow - GET authorize URL
     authorize_params = {
         "response_type": "code",
         "client_id": AUTH_CLIENT_ID,
@@ -89,23 +109,22 @@ async def authenticate(
         "code_challenge_method": "S256",
     }
 
-    # Use a cookie jar to maintain session across requests
+    # A cookie jar keeps the Django session across the login redirects.
     jar = aiohttp.CookieJar(unsafe=True)
     async with aiohttp.ClientSession(cookie_jar=jar) as auth_session:
-        # GET authorize page - will redirect to login
         async with auth_session.get(
             AUTH_AUTHORIZE_URL,
             params=authorize_params,
             allow_redirects=True,
         ) as resp:
             login_html = await resp.text()
+            # Keeps ?next=/o/authorize/... so login resumes the OAuth flow.
             login_url = str(resp.url)
 
         csrf_token = _extract_csrf_token(login_html)
         if not csrf_token:
             raise AuthenticationError("Could not find CSRF token in login page")
 
-        # Step 2: POST credentials to login form
         login_data = {
             "csrfmiddlewaretoken": csrf_token,
             "email": email,
@@ -119,29 +138,25 @@ async def authenticate(
             allow_redirects=False,
         ) as resp:
             if resp.status == 200:
-                # Still on login page - check for errors or TOTP
+                # Still on the form: either 2FA or bad credentials.
                 response_html = await resp.text()
-                if "totp" in str(resp.url).lower() or "totp" in response_html.lower():
-                    # 2FA is required
-                    totp_csrf = _extract_totp_token(response_html)
+                if _is_totp_page(str(resp.url), response_html):
                     raise TotpRequiredError(
                         {
                             "code_verifier": code_verifier,
                             "totp_url": str(resp.url),
-                            "totp_csrf": totp_csrf,
+                            "totp_csrf": _extract_csrf_token(response_html),
                             "jar": jar,
                         }
                     )
                 raise InvalidCredentialsError("Invalid email or password")
 
-            # Follow redirects to capture the authorization code
             location = resp.headers.get("Location", "")
             code = await _follow_redirects_for_code(auth_session, location)
 
         if not code:
             raise AuthenticationError("Could not obtain authorization code")
 
-        # Step 3: Exchange code for tokens
         return await _exchange_code(session, code, code_verifier)
 
 
@@ -150,10 +165,7 @@ async def authenticate_totp(
     totp_code: str,
     session_data: dict,
 ) -> dict:
-    """Complete authentication with TOTP code.
-
-    Returns dict with access_token and refresh_token.
-    """
+    """Complete authentication with a TOTP code."""
     jar = session_data["jar"]
     code_verifier = session_data["code_verifier"]
 
@@ -187,10 +199,7 @@ async def refresh_access_token(
     session: aiohttp.ClientSession,
     refresh_token: str,
 ) -> dict:
-    """Refresh an access token using the refresh token.
-
-    Returns dict with new access_token and refresh_token.
-    """
+    """Refresh an access token using the refresh token."""
     data = {
         "grant_type": "refresh_token",
         "client_id": AUTH_CLIENT_ID,
@@ -214,31 +223,26 @@ async def _follow_redirects_for_code(
     session: aiohttp.ClientSession,
     url: str,
 ) -> str | None:
-    """Follow redirect chain until we capture the authorization code."""
+    """Follow the redirect chain until the authorization code appears."""
     max_redirects = 10
     for _ in range(max_redirects):
         if not url:
             return None
 
         parsed = urlparse(url)
-        qs = parse_qs(parsed.query)
-        if "code" in qs:
-            return qs["code"][0]
+        if "code" in parse_qs(parsed.query):
+            return parse_qs(parsed.query)["code"][0]
 
-        # Check if this is a relative URL
         if not parsed.scheme:
             url = f"https://account.prusa3d.com{url}"
 
         async with session.get(url, allow_redirects=False) as resp:
-            if resp.status in (301, 302, 303, 307, 308):
-                url = resp.headers.get("Location", "")
-                # Check the redirect URL for code parameter
-                redirect_parsed = urlparse(url)
-                redirect_qs = parse_qs(redirect_parsed.query)
-                if "code" in redirect_qs:
-                    return redirect_qs["code"][0]
-            else:
+            if resp.status not in (301, 302, 303, 307, 308):
                 return None
+            url = resp.headers.get("Location", "")
+            redirect_qs = parse_qs(urlparse(url).query)
+            if "code" in redirect_qs:
+                return redirect_qs["code"][0]
 
     return None
 
@@ -248,7 +252,7 @@ async def _exchange_code(
     code: str,
     code_verifier: str,
 ) -> dict:
-    """Exchange authorization code for tokens."""
+    """Exchange the authorization code for tokens."""
     data = {
         "grant_type": "authorization_code",
         "client_id": AUTH_CLIENT_ID,
@@ -260,10 +264,13 @@ async def _exchange_code(
     async with session.post(AUTH_TOKEN_URL, data=data) as resp:
         if resp.status != 200:
             error_text = await resp.text()
-            raise AuthenticationError(f"Token exchange failed ({resp.status}): {error_text}")
+            raise AuthenticationError(
+                f"Token exchange failed ({resp.status}): {error_text}"
+            )
 
         token_data = await resp.json()
         return {
             "access_token": token_data["access_token"],
             "refresh_token": token_data["refresh_token"],
+            "id_token": token_data.get("id_token", ""),
         }

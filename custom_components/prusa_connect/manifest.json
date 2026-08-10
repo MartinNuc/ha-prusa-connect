@@ -3,8 +3,8 @@
   "name": "Prusa Connect",
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/your-repo/ha-prusa-connect",
+  "documentation": "https://github.com/MartinNuc/ha-prusa-connect",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
