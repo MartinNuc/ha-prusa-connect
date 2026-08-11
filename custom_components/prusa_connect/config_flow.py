@@ -1,4 +1,4 @@
-"""Config flow for Prusa Connect integration."""
+"""Config flow for the Prusa Connect integration."""
 
 from __future__ import annotations
 
@@ -10,9 +10,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import AbortFlow
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import PrusaConnectAPI
 from .auth import (
     AuthenticationError,
     InvalidCredentialsError,
@@ -20,6 +18,7 @@ from .auth import (
     TotpRequiredError,
     authenticate,
     authenticate_totp,
+    decode_id_token,
 )
 from .const import CONF_ACCESS_TOKEN, CONF_REFRESH_TOKEN, CONF_USER_ID, DOMAIN
 
@@ -35,6 +34,17 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._totp_session_data: dict | None = None
         self._email: str | None = None
+
+    def _account_from_tokens(self, tokens: dict) -> tuple[str, str]:
+        """Return (user_id, label) for the signed-in account.
+
+        Connect exposes no user endpoint, so identity comes from the id_token.
+        """
+        claims = decode_id_token(tokens["id_token"])
+        user = claims.get("user") or {}
+        user_id = str(user.get("id") or claims.get("sub") or "")
+        label = user.get("email") or self._email or "Prusa Connect"
+        return user_id, label
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -107,18 +117,12 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
                 raise
 
             except Exception:
-                _LOGGER.exception(
-                    "Unexpected error during TOTP authentication"
-                )
+                _LOGGER.exception("Unexpected error during TOTP authentication")
                 errors["base"] = "unknown"
 
         return self.async_show_form(
             step_id="totp",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("totp_code"): str,
-                }
-            ),
+            data_schema=vol.Schema({vol.Required("totp_code"): str}),
             errors=errors,
         )
 
@@ -159,9 +163,7 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
                 raise
 
             except Exception:
-                _LOGGER.exception(
-                    "Unexpected error during reauthentication"
-                )
+                _LOGGER.exception("Unexpected error during reauthentication")
                 errors["base"] = "unknown"
 
         return self.async_show_form(
@@ -201,37 +203,24 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
                 raise
 
             except Exception:
-                _LOGGER.exception(
-                    "Unexpected error during TOTP reauthentication"
-                )
+                _LOGGER.exception("Unexpected error during TOTP reauthentication")
                 errors["base"] = "unknown"
 
         return self.async_show_form(
             step_id="reauth_totp",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("totp_code"): str,
-                }
-            ),
+            data_schema=vol.Schema({vol.Required("totp_code"): str}),
             errors=errors,
         )
 
     async def _async_finish_login(self, tokens: dict) -> ConfigFlowResult:
-        """Fetch user info and create the config entry."""
-        session = async_get_clientsession(self.hass)
-        api = PrusaConnectAPI(
-            session,
-            tokens["access_token"],
-            tokens["refresh_token"],
-        )
-        user = await api.get_user()
+        """Create the config entry for the signed-in account."""
+        user_id, label = self._account_from_tokens(tokens)
 
-        user_id = str(user.get("id", ""))
         await self.async_set_unique_id(user_id)
         self._abort_if_unique_id_configured()
 
         return self.async_create_entry(
-            title=user.get("email", self._email or "Prusa Connect"),
+            title=label,
             data={
                 CONF_ACCESS_TOKEN: tokens["access_token"],
                 CONF_REFRESH_TOKEN: tokens["refresh_token"],
@@ -241,15 +230,8 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_finish_reauth(self, tokens: dict) -> ConfigFlowResult:
         """Update the existing config entry with new tokens."""
-        session = async_get_clientsession(self.hass)
-        api = PrusaConnectAPI(
-            session,
-            tokens["access_token"],
-            tokens["refresh_token"],
-        )
-        user = await api.get_user()
+        user_id, _label = self._account_from_tokens(tokens)
 
-        user_id = str(user.get("id", ""))
         await self.async_set_unique_id(user_id)
         self._abort_if_unique_id_mismatch()
 

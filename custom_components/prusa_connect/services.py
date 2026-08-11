@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -38,7 +37,6 @@ def _resolve_printer(
             translation_key="device_not_found",
         )
 
-    # Find the printer UUID from device identifiers
     printer_uuid = None
     for identifier in device.identifiers:
         if identifier[0] == DOMAIN:
@@ -51,7 +49,6 @@ def _resolve_printer(
             translation_key="not_prusa_device",
         )
 
-    # Find the config entry for this device
     for entry_id in device.config_entries:
         entry = hass.config_entries.async_get_entry(entry_id)
         if entry and entry.domain == DOMAIN:
@@ -70,113 +67,50 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, "pause_print"):
         return
 
-    async def _handle_pause(call: ServiceCall) -> None:
+    def _make_simple_handler(method_name: str):
+        """Build a handler for a command that takes no arguments."""
+
+        async def _handler(call: ServiceCall) -> None:
+            api, coordinator, uuid = _resolve_printer(hass, call)
+            await getattr(api, method_name)(uuid)
+            coordinator.expect_change()
+            await coordinator.async_request_refresh()
+
+        return _handler
+
+    for name, method in (
+        ("pause_print", "pause_print"),
+        ("resume_print", "resume_print"),
+        ("stop_print", "stop_print"),
+        ("set_ready", "set_ready"),
+        ("cancel_ready", "set_unready"),
+    ):
+        hass.services.async_register(DOMAIN, name, _make_simple_handler(method))
+
+    async def _handle_start_print(call: ServiceCall) -> None:
         api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.pause_print(uuid)
+        await api.start_print(uuid, call.data["path"])
         coordinator.expect_change()
         await coordinator.async_request_refresh()
 
-    async def _handle_resume(call: ServiceCall) -> None:
-        api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.resume_print(uuid)
-        coordinator.expect_change()
-        await coordinator.async_request_refresh()
-
-    async def _handle_stop(call: ServiceCall) -> None:
-        api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.stop_print(uuid)
-        coordinator.expect_change()
-        await coordinator.async_request_refresh()
-
-    async def _handle_start_cloud(call: ServiceCall) -> None:
-        api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.start_print_cloud(
-            uuid,
-            call.data["file_hash"],
-            int(call.data["team_id"]),
-        )
-        coordinator.expect_change()
-        await coordinator.async_request_refresh()
-
-    async def _handle_start_usb(call: ServiceCall) -> None:
-        api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.start_print_usb(uuid, call.data["path"])
-        coordinator.expect_change()
-        await coordinator.async_request_refresh()
-
-    async def _handle_start_url(call: ServiceCall) -> None:
-        api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.start_print_url(uuid, call.data["file_url"])
-        coordinator.expect_change()
-        await coordinator.async_request_refresh()
-
-    async def _handle_set_ready(call: ServiceCall) -> None:
-        api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.set_ready(uuid)
-        coordinator.expect_change()
-        await coordinator.async_request_refresh()
-
-    async def _handle_cancel_ready(call: ServiceCall) -> None:
-        api, coordinator, uuid = _resolve_printer(hass, call)
-        await api.set_unready(uuid)
-        coordinator.expect_change()
-        await coordinator.async_request_refresh()
+    hass.services.async_register(
+        DOMAIN,
+        "start_print",
+        _handle_start_print,
+        schema=vol.Schema(
+            {vol.Required("path"): str},
+            extra=vol.ALLOW_EXTRA,
+        ),
+    )
 
     async def _handle_respond_dialog(call: ServiceCall) -> None:
         api, coordinator, uuid = _resolve_printer(hass, call)
         await api.respond_to_dialog(
-            uuid,
-            int(call.data["dialog_id"]),
-            call.data["button"],
+            uuid, int(call.data["dialog_id"]), call.data["button"]
         )
         coordinator.expect_change()
         await coordinator.async_request_refresh()
 
-    # Simple services (no extra fields)
-    for name, handler in (
-        ("pause_print", _handle_pause),
-        ("resume_print", _handle_resume),
-        ("stop_print", _handle_stop),
-        ("set_ready", _handle_set_ready),
-        ("cancel_ready", _handle_cancel_ready),
-    ):
-        hass.services.async_register(DOMAIN, name, handler)
-
-    # Services with required fields
-    hass.services.async_register(
-        DOMAIN,
-        "start_print_cloud",
-        _handle_start_cloud,
-        schema=vol.Schema(
-            {
-                vol.Required("file_hash"): str,
-                vol.Required("team_id"): vol.Coerce(int),
-            },
-            extra=vol.ALLOW_EXTRA,
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        "start_print_usb",
-        _handle_start_usb,
-        schema=vol.Schema(
-            {
-                vol.Required("path"): str,
-            },
-            extra=vol.ALLOW_EXTRA,
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        "start_print_url",
-        _handle_start_url,
-        schema=vol.Schema(
-            {
-                vol.Required("file_url"): str,
-            },
-            extra=vol.ALLOW_EXTRA,
-        ),
-    )
     hass.services.async_register(
         DOMAIN,
         "respond_to_dialog",

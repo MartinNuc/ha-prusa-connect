@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api import PrusaConnectAPI
+from .const import (
+    CMD_CANCEL_READY,
+    CMD_PAUSE,
+    CMD_RESUME,
+    CMD_SET_READY,
+    CMD_STATES,
+    CMD_STOP,
+)
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
 
@@ -18,12 +26,17 @@ if TYPE_CHECKING:
     from . import PrusaConnectConfigEntry
 
 
+def _state(printer: dict) -> str | None:
+    """Return the printer's reported state."""
+    return printer.get("printer_state") or printer.get("state")
+
+
 @dataclass(frozen=True, kw_only=True)
 class PrusaConnectButtonEntityDescription(ButtonEntityDescription):
     """Describes a Prusa Connect button entity."""
 
-    press_fn: Callable[[PrusaConnectAPI, str], Awaitable[None]]
-    available_fn: Callable[[dict], bool]
+    command: str
+    press_fn: Callable[[PrusaConnectAPI, str], Coroutine[Any, Any, None]]
 
 
 BUTTON_DESCRIPTIONS: tuple[PrusaConnectButtonEntityDescription, ...] = (
@@ -31,36 +44,36 @@ BUTTON_DESCRIPTIONS: tuple[PrusaConnectButtonEntityDescription, ...] = (
         key="pause_print",
         translation_key="pause_print",
         icon="mdi:pause",
+        command=CMD_PAUSE,
         press_fn=lambda api, uuid: api.pause_print(uuid),
-        available_fn=lambda p: p.get("state") == "PRINTING",
     ),
     PrusaConnectButtonEntityDescription(
         key="resume_print",
         translation_key="resume_print",
         icon="mdi:play",
+        command=CMD_RESUME,
         press_fn=lambda api, uuid: api.resume_print(uuid),
-        available_fn=lambda p: p.get("state") == "PAUSED",
     ),
     PrusaConnectButtonEntityDescription(
         key="stop_print",
         translation_key="stop_print",
         icon="mdi:stop",
+        command=CMD_STOP,
         press_fn=lambda api, uuid: api.stop_print(uuid),
-        available_fn=lambda p: p.get("state") in ("PRINTING", "PAUSED"),
     ),
     PrusaConnectButtonEntityDescription(
         key="set_ready",
         translation_key="set_ready",
-        icon="mdi:check-circle",
+        icon="mdi:check-circle-outline",
+        command=CMD_SET_READY,
         press_fn=lambda api, uuid: api.set_ready(uuid),
-        available_fn=lambda p: p.get("state") == "FINISHED",
     ),
     PrusaConnectButtonEntityDescription(
         key="cancel_ready",
         translation_key="cancel_ready",
-        icon="mdi:close-circle",
+        icon="mdi:close-circle-outline",
+        command=CMD_CANCEL_READY,
         press_fn=lambda api, uuid: api.set_unready(uuid),
-        available_fn=lambda p: p.get("state") == "READY",
     ),
 )
 
@@ -79,22 +92,24 @@ class PrusaConnectButton(PrusaConnectEntity, ButtonEntity):
     ) -> None:
         """Initialize the button."""
         super().__init__(coordinator, printer_uuid)
-        self._api = api
         self.entity_description = description
+        self._api = api
         self._attr_unique_id = f"{printer_uuid}_{description.key}"
+
+    async def async_press(self) -> None:
+        """Send the command to the printer."""
+        await self.entity_description.press_fn(self._api, self._printer_uuid)
+        # Poll faster for a short window so the new state shows up promptly.
+        self.coordinator.expect_change()
+        await self.coordinator.async_request_refresh()
 
     @property
     def available(self) -> bool:
-        """Return True if the button action is available."""
+        """Only available in states the printer accepts the command from."""
         if not super().available:
             return False
-        return self.entity_description.available_fn(self._printer_data)
-
-    async def async_press(self) -> None:
-        """Handle the button press."""
-        await self.entity_description.press_fn(self._api, self._printer_uuid)
-        self.coordinator.expect_change()
-        await self.coordinator.async_request_refresh()
+        allowed = CMD_STATES.get(self.entity_description.command, frozenset())
+        return _state(self._printer_data) in allowed
 
 
 async def async_setup_entry(
@@ -105,19 +120,9 @@ async def async_setup_entry(
     """Set up Prusa Connect buttons."""
     data = entry.runtime_data
     printer_coordinator = data.printer_coordinator
-    api = data.api
 
-    entities: list[PrusaConnectButton] = []
-
-    for printer_uuid in printer_coordinator.data:
-        for description in BUTTON_DESCRIPTIONS:
-            entities.append(
-                PrusaConnectButton(
-                    printer_coordinator,
-                    api,
-                    printer_uuid,
-                    description,
-                )
-            )
-
-    async_add_entities(entities)
+    async_add_entities(
+        PrusaConnectButton(printer_coordinator, data.api, printer_uuid, description)
+        for printer_uuid in printer_coordinator.data
+        for description in BUTTON_DESCRIPTIONS
+    )

@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import PrusaConnectAPI
-from .const import CONF_ACCESS_TOKEN, CONF_REFRESH_TOKEN, DOMAIN
+from .const import CONF_ACCESS_TOKEN, CONF_REFRESH_TOKEN
 from .coordinator import PrusaConnectJobCoordinator, PrusaConnectPrinterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,15 +61,12 @@ async def async_setup_entry(
         token_update_callback=_async_update_tokens,
     )
 
-    # Set up coordinators
     printer_coordinator = PrusaConnectPrinterCoordinator(hass, entry, api)
     job_coordinator = PrusaConnectJobCoordinator(hass, entry, api)
 
-    # Fetch initial data
     await printer_coordinator.async_config_entry_first_refresh()
     await job_coordinator.async_config_entry_first_refresh()
 
-    # Store as typed runtime_data
     entry.runtime_data = PrusaConnectData(
         api=api,
         printer_coordinator=printer_coordinator,
@@ -78,7 +75,6 @@ async def async_setup_entry(
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Register services
     from .services import async_setup_services
 
     await async_setup_services(hass)

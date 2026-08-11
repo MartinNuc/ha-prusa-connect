@@ -22,6 +22,11 @@ if TYPE_CHECKING:
     from . import PrusaConnectConfigEntry
 
 
+def _state(printer: dict) -> str | None:
+    """Return the printer's reported state."""
+    return printer.get("printer_state") or printer.get("state")
+
+
 @dataclass(frozen=True, kw_only=True)
 class PrusaConnectBinarySensorEntityDescription(BinarySensorEntityDescription):
     """Describes a Prusa Connect binary sensor entity."""
@@ -38,35 +43,27 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[
         translation_key="online",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda p: p.get("state") != "OFFLINE",
+        value_fn=lambda p: _state(p) != "OFFLINE",
     ),
     PrusaConnectBinarySensorEntityDescription(
         key="printing",
         translation_key="printing",
         device_class=BinarySensorDeviceClass.RUNNING,
-        value_fn=lambda p: p.get("state") in ("PRINTING", "PAUSED"),
+        value_fn=lambda p: _state(p) in ("PRINTING", "PAUSED"),
     ),
     PrusaConnectBinarySensorEntityDescription(
         key="attention_required",
         translation_key="attention_required",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        value_fn=lambda p: p.get("state") in ("ATTENTION", "ERROR"),
-    ),
-    PrusaConnectBinarySensorEntityDescription(
-        key="mmu_enabled",
-        translation_key="mmu_enabled",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:swap-horizontal",
-        value_fn=lambda p: p.get("hasMmuEnabled"),
-        exists_fn=lambda p: "hasMmuEnabled" in p,
+        value_fn=lambda p: _state(p) in ("ATTENTION", "ERROR"),
     ),
     PrusaConnectBinarySensorEntityDescription(
         key="enclosure",
         translation_key="enclosure",
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:cube-outline",
-        value_fn=lambda p: p.get("hasEnclosure"),
-        exists_fn=lambda p: "hasEnclosure" in p,
+        value_fn=lambda p: bool((p.get("enclosure") or {}).get("present")),
+        exists_fn=lambda p: isinstance(p.get("enclosure"), dict),
     ),
 )
 
@@ -108,9 +105,7 @@ async def async_setup_entry(
             if description.exists_fn(printer_data):
                 entities.append(
                     PrusaConnectBinarySensor(
-                        printer_coordinator,
-                        printer_uuid,
-                        description,
+                        printer_coordinator, printer_uuid, description
                     )
                 )
 
