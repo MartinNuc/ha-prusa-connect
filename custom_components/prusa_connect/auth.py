@@ -23,6 +23,8 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+ACCOUNT_ORIGIN = "https://account.prusa3d.com"
+
 
 class AuthenticationError(Exception):
     """Base authentication error."""
@@ -62,15 +64,32 @@ def _extract_csrf_token(html: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _find_otp_field(html: str) -> str | None:
+    """Return the name of the one-time-code input on a page, if present.
+
+    Prusa currently calls it ``otp_token``, but the name is not documented, so
+    match anything that looks like a one-time code. ``csrfmiddlewaretoken`` is
+    skipped because its name also contains "token".
+    """
+    for name in re.findall(r'<input[^>]+name=["\']([^"\']+)', html):
+        lowered = name.lower()
+        if lowered == "csrfmiddlewaretoken":
+            continue
+        if "otp" in lowered or "2fa" in lowered or "two_factor" in lowered:
+            return name
+    return None
+
+
 def _is_totp_page(url: str, html: str) -> bool:
     """Detect the two-factor form.
 
-    Matches on the OTP input field rather than the word "totp" appearing
-    anywhere in the page, which is unreliable on a large marketing-heavy page.
+    Matches the OTP input field or the URL path (Prusa uses /login/totp/),
+    rather than the word "totp" appearing anywhere in a large marketing page.
     """
-    if "otp" in urlparse(url).path.lower():
+    path = urlparse(url).path.lower()
+    if any(token in path for token in ("otp", "two-factor", "2fa", "verify")):
         return True
-    return re.search(r'<input[^>]+name=["\']otp_token["\']', html) is not None
+    return _find_otp_field(html) is not None
 
 
 def decode_id_token(id_token: str) -> dict:
@@ -138,26 +157,48 @@ async def authenticate(
             allow_redirects=False,
         ) as resp:
             if resp.status == 200:
-                # Still on the form: either 2FA or bad credentials.
+                # Re-rendered the form: bad credentials, or a 2FA challenge
+                # served in place.
                 response_html = await resp.text()
                 if _is_totp_page(str(resp.url), response_html):
                     raise TotpRequiredError(
-                        {
-                            "code_verifier": code_verifier,
-                            "totp_url": str(resp.url),
-                            "totp_csrf": _extract_csrf_token(response_html),
-                            "jar": jar,
-                        }
+                        _totp_session(
+                            code_verifier, str(resp.url), response_html, jar
+                        )
                     )
                 raise InvalidCredentialsError("Invalid email or password")
 
             location = resp.headers.get("Location", "")
-            code = await _follow_redirects_for_code(auth_session, location)
 
-        if not code:
-            raise AuthenticationError("Could not obtain authorization code")
+        code, final_url, final_html = await _follow_redirects_for_code(
+            auth_session, location
+        )
 
-        return await _exchange_code(session, code, code_verifier)
+        if code:
+            return await _exchange_code(session, code, code_verifier)
+
+        # With 2FA enabled the password POST redirects to /login/totp/ instead
+        # of continuing to the callback, so the chain ends on the challenge
+        # page rather than yielding a code.
+        if final_html is not None and _is_totp_page(final_url or "", final_html):
+            raise TotpRequiredError(
+                _totp_session(code_verifier, final_url or "", final_html, jar)
+            )
+
+        raise AuthenticationError("Could not obtain authorization code")
+
+
+def _totp_session(
+    code_verifier: str, url: str, html: str, jar: aiohttp.CookieJar
+) -> dict:
+    """Build the state needed to continue authentication after the 2FA form."""
+    return {
+        "code_verifier": code_verifier,
+        "totp_url": url,
+        "totp_csrf": _extract_csrf_token(html),
+        "totp_field": _find_otp_field(html) or "otp_token",
+        "jar": jar,
+    }
 
 
 async def authenticate_totp(
@@ -168,12 +209,16 @@ async def authenticate_totp(
     """Complete authentication with a TOTP code."""
     jar = session_data["jar"]
     code_verifier = session_data["code_verifier"]
+    field = session_data.get("totp_field") or "otp_token"
+    csrf = session_data.get("totp_csrf")
+
+    if not csrf:
+        raise AuthenticationError("Could not find CSRF token on the 2FA form")
 
     async with aiohttp.ClientSession(cookie_jar=jar) as auth_session:
-        totp_data = {
-            "csrfmiddlewaretoken": session_data["totp_csrf"],
-            "otp_token": totp_code,
-        }
+        # The challenge URL carries ?next=/o/authorize/..., so posting back to
+        # it resumes the OAuth flow without re-sending the `next` field.
+        totp_data = {"csrfmiddlewaretoken": csrf, field: totp_code}
 
         async with auth_session.post(
             session_data["totp_url"],
@@ -185,7 +230,10 @@ async def authenticate_totp(
                 raise TotpInvalidError("Invalid TOTP code")
 
             location = resp.headers.get("Location", "")
-            code = await _follow_redirects_for_code(auth_session, location)
+
+        code, _final_url, _final_html = await _follow_redirects_for_code(
+            auth_session, location
+        )
 
         if not code:
             raise AuthenticationError(
@@ -222,29 +270,35 @@ async def refresh_access_token(
 async def _follow_redirects_for_code(
     session: aiohttp.ClientSession,
     url: str,
-) -> str | None:
-    """Follow the redirect chain until the authorization code appears."""
+) -> tuple[str | None, str | None, str | None]:
+    """Follow the redirect chain looking for the authorization code.
+
+    Returns (code, final_url, final_html). The final page is handed back so the
+    caller can tell a 2FA challenge apart from a genuine failure.
+    """
     max_redirects = 10
     for _ in range(max_redirects):
         if not url:
-            return None
+            return None, None, None
 
         parsed = urlparse(url)
         if "code" in parse_qs(parsed.query):
-            return parse_qs(parsed.query)["code"][0]
+            return parse_qs(parsed.query)["code"][0], url, None
 
         if not parsed.scheme:
-            url = f"https://account.prusa3d.com{url}"
+            url = f"{ACCOUNT_ORIGIN}{url}"
 
         async with session.get(url, allow_redirects=False) as resp:
             if resp.status not in (301, 302, 303, 307, 308):
-                return None
+                # Landed on a real page — return it for inspection.
+                return None, str(resp.url), await resp.text()
+
             url = resp.headers.get("Location", "")
             redirect_qs = parse_qs(urlparse(url).query)
             if "code" in redirect_qs:
-                return redirect_qs["code"][0]
+                return redirect_qs["code"][0], url, None
 
-    return None
+    return None, url, None
 
 
 async def _exchange_code(
