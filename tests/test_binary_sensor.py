@@ -1,118 +1,87 @@
-"""Tests for Prusa Connect binary sensor platform."""
+"""Binary sensor mapping and coordinator job selection."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import pytest
 
-from homeassistant.const import STATE_OFF, STATE_ON
-from homeassistant.core import HomeAssistant
-
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from .conftest import MOCK_PRINTER_DATA
-
-
-async def test_binary_sensor_idle_state(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-) -> None:
-    """Test binary sensor entities when printer is idle."""
-    state = hass.states.get("binary_sensor.my_mk4s_online")
-    assert state is not None
-    assert state.state == STATE_ON  # IDLE != OFFLINE
-
-    state = hass.states.get("binary_sensor.my_mk4s_printing")
-    assert state is not None
-    assert state.state == STATE_OFF
-
-    state = hass.states.get("binary_sensor.my_mk4s_attention_required")
-    assert state is not None
-    assert state.state == STATE_OFF
+from custom_components.prusa_connect.binary_sensor import (
+    BINARY_SENSOR_DESCRIPTIONS,
+)
+from custom_components.prusa_connect.coordinator import _job_is_more_recent
+from custom_components.prusa_connect.diagnostics import _redact_printer
 
 
-async def test_binary_sensor_printing_state(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test binary sensors when printer is PRINTING."""
-    printing_data = {**MOCK_PRINTER_DATA, "state": "PRINTING"}
-    mock_api.get_printer.return_value = printing_data
-
-    mock_config_entry.add_to_hass(hass)
-
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
-
-    state = hass.states.get("binary_sensor.my_mk4s_printing")
-    assert state is not None
-    assert state.state == STATE_ON
-
-    state = hass.states.get("binary_sensor.my_mk4s_online")
-    assert state is not None
-    assert state.state == STATE_ON
+def _values(printer: dict) -> dict:
+    return {
+        d.key: d.value_fn(printer)
+        for d in BINARY_SENSOR_DESCRIPTIONS
+        if d.exists_fn(printer)
+    }
 
 
-async def test_binary_sensor_offline(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test binary sensors when printer is OFFLINE."""
-    offline_data = {**MOCK_PRINTER_DATA, "state": "OFFLINE"}
-    mock_api.get_printer.return_value = offline_data
-
-    mock_config_entry.add_to_hass(hass)
-
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
-
-    state = hass.states.get("binary_sensor.my_mk4s_online")
-    assert state is not None
-    assert state.state == STATE_OFF
+def test_idle_printer(printer):
+    """A reachable, idle printer is online and not printing."""
+    values = _values(printer)
+    assert values["online"] is True
+    assert values["printing"] is False
+    assert values["attention_required"] is False
 
 
-async def test_binary_sensor_attention(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test binary sensors when printer needs attention."""
-    attention_data = {**MOCK_PRINTER_DATA, "state": "ATTENTION"}
-    mock_api.get_printer.return_value = attention_data
+@pytest.mark.parametrize(
+    ("state", "printing"), [("PRINTING", True), ("PAUSED", True), ("IDLE", False)]
+)
+def test_printing_states(printer, state, printing):
+    """Paused counts as printing — the job is still on the bed."""
+    assert _values({**printer, "printer_state": state})["printing"] is printing
 
-    mock_config_entry.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
+@pytest.mark.parametrize("state", ["ATTENTION", "ERROR"])
+def test_attention_states(printer, state):
+    """States needing intervention raise the problem flag."""
+    assert _values({**printer, "printer_state": state})["attention_required"] is True
 
-    state = hass.states.get("binary_sensor.my_mk4s_attention_required")
-    assert state is not None
-    assert state.state == STATE_ON
+
+def test_offline(printer):
+    """An offline printer reports not-online."""
+    assert _values({**printer, "printer_state": "OFFLINE"})["online"] is False
+
+
+def test_enclosure_reads_presence(printer):
+    """Enclosure presence is nested, not a top-level boolean."""
+    assert _values({**printer, "enclosure": {"present": True}})["enclosure"] is True
+    assert _values({**printer, "enclosure": {"present": False}})["enclosure"] is False
+
+
+def test_enclosure_absent_creates_no_entity(printer):
+    """Printers without the field get no enclosure entity."""
+    without = {k: v for k, v in printer.items() if k != "enclosure"}
+    assert "enclosure" not in _values(without)
+
+
+def test_active_job_beats_finished(job):
+    """A running print outranks a completed one, even if it started earlier."""
+    active = {**job, "state": "PRINTING", "start": job["start"] - 10_000}
+    assert _job_is_more_recent(active, job) is True
+    assert _job_is_more_recent(job, active) is False
+
+
+def test_newer_job_wins_when_both_finished(job):
+    """Otherwise the most recently started job is the current one."""
+    older = {**job, "start": job["start"] - 10_000}
+    assert _job_is_more_recent(job, older) is True
+
+
+def test_diagnostics_redacts_credentials():
+    """Diagnostics must not leak printer credentials or network details."""
+    printer = {
+        "name": "CORE One",
+        "api_key": "SECRET",
+        "prusaconnect_api_key": "SECRET",
+        "prusalink_api_key": "SECRET",
+        "sn": "SECRET",
+        "network_info": {"wifi_ssid": "SECRET"},
+    }
+    redacted = _redact_printer(printer)
+
+    assert "SECRET" not in str(redacted)
+    assert redacted["name"] == "CORE One"

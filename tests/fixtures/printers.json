@@ -1,0 +1,75 @@
+{
+  "printers": [
+    {
+      "printer_model": "COREONE",
+      "supported_printer_models": [
+        "COREONEOAK"
+      ],
+      "printer_type_compatible": [
+        "COREONE",
+        "COREONEOAK"
+      ],
+      "printer_state": "IDLE",
+      "last_online": 1786403115.9183064,
+      "temp": {
+        "temp_nozzle": 28.0,
+        "temp_bed": 26.2,
+        "target_nozzle": 0.0,
+        "target_bed": 0.0
+      },
+      "axis_z": 2.0,
+      "speed": 100,
+      "nozzle_diameter": 0.4,
+      "enclosure": {
+        "present": false
+      },
+      "tools": {
+        "1": {
+          "temp": 28.0,
+          "active": true,
+          "nozzle_diameter": 0.4,
+          "material": "PLA",
+          "high_flow": true,
+          "hardened": false
+        }
+      },
+      "connect_state": "IDLE",
+      "allowed_functionalities": [
+        "files",
+        "filament",
+        "queue",
+        "lazy_file_protocol",
+        "fw_update",
+        "fw_update_path",
+        "bgcode",
+        "dialogs",
+        "tool_mapping",
+        "set_tool_params",
+        "set_enclosure_params",
+        "set_hostname",
+        "old_job_info",
+        "set_addon_params"
+      ],
+      "uuid": "11111111-2222-3333-4444-555555555555",
+      "name": "CORE One",
+      "location": "Workshop",
+      "created": 1786303784,
+      "printer_type": "7.1.0",
+      "printer_type_name": "Prusa CORE One",
+      "team_id": 1,
+      "team_name": "Team",
+      "firmware": "6.5.7+12836",
+      "disabled": {
+        "monitoring": true,
+        "auto_printing": true,
+        "auto_harvesting": true
+      },
+      "filament": {
+        "material": "PLA"
+      },
+      "rights_r": true,
+      "rights_w": true,
+      "rights_u": true
+    }
+  ]
+}

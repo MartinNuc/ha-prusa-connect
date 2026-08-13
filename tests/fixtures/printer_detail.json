@@ -1,0 +1,104 @@
+{
+  "state": "IDLE",
+  "time_delta": 0,
+  "last_online": 1786403115.9183064,
+  "axis_x": 245.0,
+  "axis_y": 0.0,
+  "axis_z": 2.0,
+  "temp": {
+    "temp_nozzle": 28.0,
+    "temp_bed": 26.2,
+    "target_nozzle": 0.0,
+    "target_bed": 0.0
+  },
+  "flow": 100,
+  "speed": 100,
+  "sheet_settings": [],
+  "inaccurate_estimates": false,
+  "nozzle_diameter": 0.4,
+  "enclosure": {
+    "present": false,
+    "enabled": false
+  },
+  "chamber": {
+    "temp": 26.2,
+    "target_temp": 0.0,
+    "fan_1_rpm": 0,
+    "fan_2_rpm": 0,
+    "led_intensity": 100
+  },
+  "tools": {
+    "1": {
+      "temp": 28.0,
+      "active": true,
+      "nozzle_diameter": 0.4,
+      "material": "PLA",
+      "high_flow": true,
+      "hardened": false
+    }
+  },
+  "printer_model": "COREONE",
+  "supported_printer_models": [
+    "COREONEOAK"
+  ],
+  "connect_state": "IDLE",
+  "printer_state": "IDLE",
+  "allowed_functionalities": [
+    "files",
+    "filament",
+    "queue",
+    "lazy_file_protocol",
+    "fw_update",
+    "fw_update_path",
+    "bgcode",
+    "dialogs",
+    "tool_mapping",
+    "set_tool_params",
+    "set_enclosure_params",
+    "set_hostname",
+    "old_job_info",
+    "set_addon_params"
+  ],
+  "support": {
+    "stable": "6.5.7",
+    "prerelease": "6.5.3-RC",
+    "current": "6.5.7+12836",
+    "release": "stable",
+    "latest": "6.5.7",
+    "release_url": "https://github.com/prusa3d/Prusa-Firmware-Buddy/releases/tag/v6.5.7",
+    "state": "supported"
+  },
+  "decision_maker": "firmware",
+  "printer_type": "7.1.0",
+  "fw_printer_type": "7.1.0",
+  "printer_type_name": "Prusa CORE One",
+  "flags": {
+    "last_info_event": 1786391261.6336634
+  },
+  "max_filename": 165,
+  "printable_extension": [
+    "bgcode",
+    "bgc",
+    "bg",
+    "gcode",
+    "gco",
+    "g"
+  ],
+  "name": "CORE One",
+  "firmware": "6.5.7+12836",
+  "appendix": true,
+  "created": 1786303784,
+  "location": "Workshop",
+  "sn": "SN-TEST-0001",
+  "uuid": "11111111-2222-3333-4444-555555555555",
+  "team_id": 1,
+  "team_name": "Nucovi",
+  "is_beta": false,
+  "filament": {
+    "material": "PLA"
+  },
+  "organization_id": "aa7e634a-30e4-44af-8122-411d6f88add3",
+  "rights_r": true,
+  "rights_w": true,
+  "rights_u": true
+}

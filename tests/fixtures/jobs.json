@@ -1,0 +1,258 @@
+{
+  "jobs": [
+    {
+      "id": 1,
+      "lifetime_id": "709d818e-3402-4f0e-be4e-3bfbcae5ccf1",
+      "printer_uuid": "11111111-2222-3333-4444-555555555555",
+      "origin_id": 5,
+      "path": "/usb/SPATUL~1.BGC",
+      "state": "FIN_OK",
+      "hash": "TESTHASH",
+      "team_id": 1,
+      "time_printing": 1561,
+      "print_height": 168,
+      "start": 1786363136,
+      "end": 1786364730,
+      "source": "UNKNOWN",
+      "file": {
+        "type": "PRINT_FILE",
+        "name": "Spatula_Printables_QOI_0.4n_0.2mm_PLA_COREONE_20m.bgcode",
+        "display_name": "Spatula_Printables_QOI_0.4n_0.2mm_PLA_COREONE_20m.bgcode",
+        "size": 612570,
+        "hash": "TESTHASH",
+        "team_id": 1,
+        "meta": {
+          "filament_used_m": 3.69279,
+          "filament_used_mm": 3692.79,
+          "layer_height": 0.2,
+          "filament_cost": 0.31,
+          "filament_used_mm3": 8880.0,
+          "filament_used_cm3": 8.88,
+          "brim_width": 0,
+          "fill_density": "15%",
+          "printer_model": "COREONE",
+          "objects_info": {
+            "objects": [
+              {
+                "name": "spachtle-printables V7_90%.stl",
+                "polygon": [
+                  [
+                    85.801,
+                    83.015
+                  ],
+                  [
+                    86.836,
+                    83.136
+                  ],
+                  [
+                    88.176,
+                    83.48
+                  ],
+                  [
+                    89.436,
+                    84.02
+                  ],
+                  [
+                    90.435,
+                    84.626
+                  ],
+                  [
+                    91.637,
+                    85.636
+                  ],
+                  [
+                    100.443,
+                    94.393
+                  ],
+                  [
+                    101.728,
+                    95.295
+                  ],
+                  [
+                    102.424,
+                    95.657
+                  ],
+                  [
+                    103.15,
+                    95.957
+                  ],
+                  [
+                    104.665,
+                    96.364
+                  ],
+                  [
+                    106.228,
+                    96.501
+                  ],
+                  [
+                    179.002,
+                    96.501
+                  ],
+                  [
+                    180.562,
+                    96.636
+                  ],
+                  [
+                    182.078,
+                    97.043
+                  ],
+                  [
+                    183.502,
+                    97.705
+                  ],
+                  [
+                    184.164,
+                    98.126
+                  ],
+                  [
+                    185.365,
+                    99.136
+                  ],
+                  [
+                    185.896,
+                    99.716
+                  ],
+                  [
+                    186.796,
+                    101.001
+                  ],
+                  [
+                    187.458,
+                    102.421
+                  ],
+                  [
+                    187.694,
+                    103.17
+                  ],
+                  [
+                    187.966,
+                    104.716
+                  ],
+                  [
+                    188.0,
+                    105.501
+                  ],
+                  [
+                    188.0,
+                    114.501
+                  ],
+                  [
+                    187.863,
+                    116.061
+                  ],
+                  [
+                    187.458,
+                    117.577
+                  ],
+                  [
+                    186.796,
+                    119.001
+                  ],
+                  [
+                    185.896,
+                    120.286
+                  ],
+                  [
+                    184.785,
+                    121.395
+                  ],
+                  [
+                    184.164,
+                    121.872
+                  ],
+                  [
+                    183.502,
+                    122.295
+                  ],
+                  [
+                    182.078,
+                    122.957
+                  ],
+                  [
+                    181.329,
+                    123.193
+                  ],
+                  [
+                    179.785,
+                    123.467
+                  ],
+                  [
+                    106.228,
+                    123.501
+                  ],
+                  [
+                    104.665,
+                    123.638
+                  ],
+                  [
+                    103.899,
+                    123.807
+                  ],
+                  [
+                    102.424,
+                    124.343
+                  ],
+                  [
+                    101.728,
+                    124.705
+                  ],
+                  [
+                    100.443,
+                    125.605
+                  ],
+                  [
+                    91.135,
+                    134.83
+                  ],
+                  [
+                    89.736,
+                    135.816
+                  ],
+                  [
+                    88.815,
+                    136.274
+                  ],
+                  [
+                    87.848,
+                    136.623
+                  ],
+                  [
+                    86.849,
+                    136.862
+                  ],
+                  [
+                    85.272,
+                    136.999
+                  ],
+                  [
+                    62.0,
+                    136.999
+                  ],
+                  [
+                    62.0,
+                    83.001
+                  ]
+                ]
+              }
+            ]
+          },
+          "nozzle_high_flow": 1,
+          "temperature": 230,
+          "filament_type": "PLA",
+          "filament_used_g": 11.01,
+          "filament_abrasive": 0,
+          "estimated_print_time": 1180,
+          "estimated_printing_time_normal_mode": "19m 40s",
+          "nozzle_diameter": 0.4,
+          "support_material": 0,
+          "bed_temperature": 60,
+          "ironing": 0,
+          "total_height": 4.4,
+          "max_layer_z": 4.4
+        },
+        "preview_url": "/app/teams/1/files/TESTHASH/preview",
+        "preview_mimetype": "image/png"
+      }
+    }
+  ]
+}

@@ -1,151 +1,206 @@
-"""Fixtures for Prusa Connect integration tests."""
+"""Test setup for the Prusa Connect integration.
+
+These tests exercise the integration's own logic — endpoint construction,
+response-envelope handling, the printer/job field mapping and the auth flow —
+against fixtures captured from the live Prusa Connect API.
+
+Home Assistant itself is stubbed rather than installed. The integration targets
+HA 2025.3+ (for ``AddConfigEntryEntitiesCallback``), which requires Python 3.13,
+so depending on ``pytest-homeassistant-custom-component`` would pin the whole
+suite to one interpreter. Stubbing keeps these runnable anywhere and focuses
+them on the layer where the bugs actually were: the API contract.
+
+What this does NOT cover: entity registration, coordinator scheduling and other
+Home Assistant wiring. Those need a real HA runtime.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from typing import Any
-from unittest.mock import AsyncMock, patch
+import json
+import sys
+import types
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from custom_components.prusa_connect.const import (
-    CONF_ACCESS_TOKEN,
-    CONF_REFRESH_TOKEN,
-    CONF_USER_ID,
-    DOMAIN,
-)
-
-MOCK_PRINTER_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
-MOCK_PRINTER_DATA: dict[str, Any] = {
-    "uuid": MOCK_PRINTER_UUID,
-    "name": "My MK4S",
-    "state": "IDLE",
-    "printerType": "MK4S",
-    "printerTypeName": "Original Prusa MK4S",
-    "firmware": "5.1.2",
-    "serialNumber": "SN-123456",
-    "material": "PLA",
-    "hasMmuEnabled": False,
-    "hasEnclosure": False,
-    "telemetry": {
-        "temp_nozzle": "21.5",
-        "target_nozzle": "0",
-        "temp_bed": "22.3",
-        "target_bed": "0",
-        "printing_speed": "100",
-        "flow_factor": "100",
-        "pos_z_mm": "0.0",
-    },
-}
-
-MOCK_JOB_DATA: dict[str, Any] = {
-    "id": 42,
-    "printerUuid": MOCK_PRINTER_UUID,
-    "state": "PRINTING",
-    "progress": 0.45,
-    "fileName": "benchy.gcode",
-    "displayName": "Benchy",
-    "timeRemaining": 1800,
-    "startedAt": "2026-02-26T10:00:00+00:00",
-    "estimatedEnd": "2026-02-26T11:00:00+00:00",
-    "thumbnailUrl": "https://example.com/thumb.png",
-}
-
-MOCK_USER: dict[str, Any] = {
-    "id": 12345,
-    "email": "test@example.com",
-}
-
-MOCK_TOKENS: dict[str, str] = {
-    "access_token": "mock-access-token",
-    "refresh_token": "mock-refresh-token",
-}
+FIXTURES = Path(__file__).parent / "fixtures"
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-@pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(
-    enable_custom_integrations: None,
-) -> None:
-    """Enable custom integrations in all tests."""
+def _module(name: str) -> types.ModuleType:
+    """Register and return a stub module."""
+    module = types.ModuleType(name)
+    sys.modules[name] = module
+    return module
 
 
-@pytest.fixture
-def mock_config_entry() -> MockConfigEntry:
-    """Return a mock config entry for the integration."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="test@example.com",
-        unique_id="12345",
-        data={
-            CONF_ACCESS_TOKEN: "mock-access-token",
-            CONF_REFRESH_TOKEN: "mock-refresh-token",
-            CONF_USER_ID: "12345",
+class _Subscriptable:
+    """Base tolerating ``Class[...]`` subscripting."""
+
+    def __class_getitem__(cls, item):  # noqa: D105
+        return cls
+
+
+@dataclass(frozen=True, kw_only=True)
+class _EntityDescription:
+    """Stand-in for HA's entity description dataclasses."""
+
+    key: str
+    translation_key: str | None = None
+    device_class: object | None = None
+    state_class: object | None = None
+    native_unit_of_measurement: str | None = None
+    suggested_display_precision: int | None = None
+    icon: str | None = None
+    entity_category: str | None = None
+    options: list | None = None
+
+
+def _install_homeassistant_stubs() -> None:
+    """Install the subset of Home Assistant the integration imports."""
+    core = _module("homeassistant.core")
+    core.HomeAssistant = type("HomeAssistant", (), {})
+    core.callback = lambda fn: fn
+    core.ServiceCall = type("ServiceCall", (), {})
+
+    const = _module("homeassistant.const")
+    const.PERCENTAGE = "%"
+    const.CONF_EMAIL = "email"
+    const.CONF_PASSWORD = "password"
+    const.EntityCategory = StrEnum("EntityCategory", {"DIAGNOSTIC": "diagnostic"})
+    const.UnitOfTemperature = StrEnum("UnitOfTemperature", {"CELSIUS": "°C"})
+    const.UnitOfLength = StrEnum("UnitOfLength", {"MILLIMETERS": "mm"})
+    const.UnitOfTime = StrEnum("UnitOfTime", {"SECONDS": "s"})
+    const.Platform = StrEnum(
+        "Platform",
+        {
+            "SENSOR": "sensor",
+            "BINARY_SENSOR": "binary_sensor",
+            "BUTTON": "button",
+            "CAMERA": "camera",
+            "IMAGE": "image",
         },
-        version=1,
     )
 
+    exceptions = _module("homeassistant.exceptions")
+    exceptions.ConfigEntryAuthFailed = type("ConfigEntryAuthFailed", (Exception,), {})
+    exceptions.ServiceValidationError = type(
+        "ServiceValidationError", (Exception,), {}
+    )
+
+    ha = _module("homeassistant")
+    ha.core, ha.const, ha.exceptions = core, const, exceptions
+
+    config_entries = _module("homeassistant.config_entries")
+    config_entries.ConfigEntry = type("ConfigEntry", (_Subscriptable,), {})
+    config_entries.ConfigFlow = type(
+        "ConfigFlow", (), {"__init_subclass__": classmethod(lambda cls, **kw: None)}
+    )
+    config_entries.ConfigFlowResult = dict
+
+    data_entry_flow = _module("homeassistant.data_entry_flow")
+    data_entry_flow.AbortFlow = type("AbortFlow", (Exception,), {})
+
+    helpers = _module("homeassistant.helpers")
+
+    update_coordinator = _module("homeassistant.helpers.update_coordinator")
+    update_coordinator.DataUpdateCoordinator = type(
+        "DataUpdateCoordinator",
+        (_Subscriptable,),
+        {"__init__": lambda self, *a, **k: None},
+    )
+    update_coordinator.CoordinatorEntity = type(
+        "CoordinatorEntity",
+        (_Subscriptable,),
+        {"__init__": lambda self, *a, **k: None, "available": True},
+    )
+    update_coordinator.UpdateFailed = type("UpdateFailed", (Exception,), {})
+
+    device_registry = _module("homeassistant.helpers.device_registry")
+    device_registry.DeviceInfo = dict
+    device_registry.async_get = lambda hass: None
+
+    entity_platform = _module("homeassistant.helpers.entity_platform")
+    entity_platform.AddConfigEntryEntitiesCallback = object
+
+    typing_mod = _module("homeassistant.helpers.typing")
+    typing_mod.StateType = object
+
+    aiohttp_client = _module("homeassistant.helpers.aiohttp_client")
+    aiohttp_client.async_get_clientsession = lambda hass: None
+
+    helpers.update_coordinator = update_coordinator
+    helpers.device_registry = device_registry
+    helpers.entity_platform = entity_platform
+    helpers.typing = typing_mod
+    helpers.aiohttp_client = aiohttp_client
+
+    _module("homeassistant.components")
+
+    sensor = _module("homeassistant.components.sensor")
+    sensor.SensorDeviceClass = StrEnum(
+        "SensorDeviceClass",
+        {
+            "TEMPERATURE": "temperature",
+            "DURATION": "duration",
+            "DISTANCE": "distance",
+            "ENUM": "enum",
+        },
+    )
+    sensor.SensorStateClass = StrEnum(
+        "SensorStateClass", {"MEASUREMENT": "measurement"}
+    )
+    sensor.SensorEntityDescription = _EntityDescription
+    sensor.SensorEntity = type("SensorEntity", (), {})
+
+    binary_sensor = _module("homeassistant.components.binary_sensor")
+    binary_sensor.BinarySensorDeviceClass = StrEnum(
+        "BinarySensorDeviceClass",
+        {"CONNECTIVITY": "connectivity", "RUNNING": "running", "PROBLEM": "problem"},
+    )
+    binary_sensor.BinarySensorEntityDescription = _EntityDescription
+    binary_sensor.BinarySensorEntity = type("BinarySensorEntity", (), {})
+
+    button = _module("homeassistant.components.button")
+    button.ButtonEntityDescription = _EntityDescription
+    button.ButtonEntity = type("ButtonEntity", (), {})
+
+    camera = _module("homeassistant.components.camera")
+    camera.Camera = type("Camera", (), {"__init__": lambda self, *a, **k: None})
+
+    image = _module("homeassistant.components.image")
+    image.ImageEntity = type("ImageEntity", (), {"__init__": lambda self, *a, **k: None})
+
+
+_install_homeassistant_stubs()
+
+
+def _load(name: str) -> dict:
+    """Load a fixture captured from the live API."""
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
 
 @pytest.fixture
-def mock_api() -> AsyncMock:
-    """Return a mocked PrusaConnectAPI."""
-    api = AsyncMock()
-    api.get_user.return_value = MOCK_USER
-    api.get_printers.return_value = [
-        {"uuid": MOCK_PRINTER_UUID, "name": "My MK4S"},
-    ]
-    api.get_printer.return_value = MOCK_PRINTER_DATA
-    api.get_jobs.return_value = [MOCK_JOB_DATA]
-    api.get_cameras.return_value = []
-
-    # Command methods return None
-    api.pause_print.return_value = None
-    api.resume_print.return_value = None
-    api.stop_print.return_value = None
-    api.set_ready.return_value = None
-    api.set_unready.return_value = None
-    api.start_print_cloud.return_value = None
-    api.start_print_usb.return_value = None
-    api.start_print_url.return_value = None
-    api.respond_to_dialog.return_value = None
-
-    return api
+def printers() -> list[dict]:
+    """The /app/printers collection."""
+    return _load("printers.json")["printers"]
 
 
 @pytest.fixture
-def mock_setup_entry() -> Generator[AsyncMock]:
-    """Patch async_setup_entry to return True (skip real setup)."""
-    with patch(
-        "custom_components.prusa_connect.async_setup_entry",
-        return_value=True,
-    ) as mock:
-        yield mock
+def printer(printers: list[dict]) -> dict:
+    """A printer as the coordinator assembles it: list entry merged with detail."""
+    return {**printers[0], **_load("printer_detail.json")}
 
 
 @pytest.fixture
-async def init_integration(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> MockConfigEntry:
-    """Set up the Prusa Connect integration with mocked API."""
-    mock_config_entry.add_to_hass(hass)
+def job() -> dict:
+    """The most recent job for the printer."""
+    return _load("jobs.json")["jobs"][0]
 
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
 
-    assert mock_config_entry.state is ConfigEntryState.LOADED
-    return mock_config_entry
+@pytest.fixture
+def supported_commands() -> list[dict]:
+    """The printer's advertised command set."""
+    return _load("supported_commands.json")["commands"]

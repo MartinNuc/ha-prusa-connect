@@ -1,132 +1,62 @@
-"""Tests for Prusa Connect button platform."""
+"""Button availability, checked against the printer's advertised command set."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import pytest
 
-from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
-from homeassistant.core import HomeAssistant
-
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from .conftest import MOCK_PRINTER_DATA, MOCK_PRINTER_UUID
+from custom_components.prusa_connect.button import BUTTON_DESCRIPTIONS
+from custom_components.prusa_connect.const import CMD_STATES
 
 
-async def test_button_entities_created(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-) -> None:
-    """Test that button entities are created."""
-    assert hass.states.get("button.my_mk4s_pause_print") is not None
-    assert hass.states.get("button.my_mk4s_resume_print") is not None
-    assert hass.states.get("button.my_mk4s_stop_print") is not None
-    assert hass.states.get("button.my_mk4s_set_ready") is not None
-    assert hass.states.get("button.my_mk4s_cancel_ready") is not None
+def _allowed(command: str, state: str) -> bool:
+    """Whether a command may be issued from a given printer state."""
+    return state in CMD_STATES.get(command, frozenset())
 
 
-async def test_button_availability_idle(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-) -> None:
-    """Test that buttons are unavailable when printer is idle."""
-    state = hass.states.get("button.my_mk4s_pause_print")
-    assert state is not None
-    assert state.state == "unavailable"
-
-    state = hass.states.get("button.my_mk4s_stop_print")
-    assert state is not None
-    assert state.state == "unavailable"
+def test_command_names_are_advertised_by_the_printer(supported_commands):
+    """Every button maps to a command the API actually accepts."""
+    known = {c["command"] for c in supported_commands}
+    for description in BUTTON_DESCRIPTIONS:
+        assert description.command in known
 
 
-async def test_pause_button_available_when_printing(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test pause button is available when printing."""
-    printing_data = {**MOCK_PRINTER_DATA, "state": "PRINTING"}
-    mock_api.get_printer.return_value = printing_data
-
-    mock_config_entry.add_to_hass(hass)
-
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
-
-    state = hass.states.get("button.my_mk4s_pause_print")
-    assert state is not None
-    assert state.state != "unavailable"
+def test_command_states_match_the_api(supported_commands):
+    """Availability windows come from the API, not from guesswork."""
+    api_states = {
+        c["command"]: set(c["executable_from_state"]) for c in supported_commands
+    }
+    for command, states in CMD_STATES.items():
+        assert set(states) == api_states[command]
 
 
-async def test_pause_button_press(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test pressing the pause button calls the API."""
-    printing_data = {**MOCK_PRINTER_DATA, "state": "PRINTING"}
-    mock_api.get_printer.return_value = printing_data
-
-    mock_config_entry.add_to_hass(hass)
-
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
-
-        await hass.services.async_call(
-            BUTTON_DOMAIN,
-            SERVICE_PRESS,
-            {"entity_id": "button.my_mk4s_pause_print"},
-            blocking=True,
-        )
-
-    mock_api.pause_print.assert_called_once_with(MOCK_PRINTER_UUID)
+@pytest.mark.parametrize(
+    ("key", "state", "expected"),
+    [
+        ("pause_print", "PRINTING", True),
+        ("pause_print", "IDLE", False),
+        ("resume_print", "PAUSED", True),
+        ("resume_print", "PRINTING", False),
+        ("stop_print", "PRINTING", True),
+        ("stop_print", "PAUSED", True),
+        ("stop_print", "ATTENTION", True),
+        ("stop_print", "IDLE", False),
+        ("set_ready", "IDLE", True),
+        ("set_ready", "FINISHED", True),
+        ("set_ready", "PRINTING", False),
+        ("cancel_ready", "READY", True),
+        ("cancel_ready", "IDLE", False),
+    ],
+)
+def test_availability_per_state(key, state, expected):
+    """Buttons are offered only where the command is valid."""
+    description = next(d for d in BUTTON_DESCRIPTIONS if d.key == key)
+    assert _allowed(description.command, state) is expected
 
 
-async def test_stop_button_press(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test pressing the stop button calls the API."""
-    printing_data = {**MOCK_PRINTER_DATA, "state": "PRINTING"}
-    mock_api.get_printer.return_value = printing_data
-
-    mock_config_entry.add_to_hass(hass)
-
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
-
-        await hass.services.async_call(
-            BUTTON_DOMAIN,
-            SERVICE_PRESS,
-            {"entity_id": "button.my_mk4s_stop_print"},
-            blocking=True,
-        )
-
-    mock_api.stop_print.assert_called_once_with(MOCK_PRINTER_UUID)
+def test_idle_printer_offers_only_set_ready(printer):
+    """The captured printer is IDLE, so only Set Ready applies."""
+    state = printer["printer_state"]
+    offered = {
+        d.key for d in BUTTON_DESCRIPTIONS if _allowed(d.command, state)
+    }
+    assert offered == {"set_ready"}

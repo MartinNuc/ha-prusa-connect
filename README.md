@@ -79,7 +79,7 @@ Uses the official Prusa Connect Mobile API with OAuth 2.0 PKCE authentication â€
 
 ## Requirements
 
-- Home Assistant 2024.1.0 or newer
+- Home Assistant 2025.3.0 or newer (uses `AddConfigEntryEntitiesCallback`)
 - A Prusa Account with at least one printer registered on Prusa Connect
 
 ## License

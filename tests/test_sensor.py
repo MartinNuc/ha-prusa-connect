@@ -1,119 +1,113 @@
-"""Tests for Prusa Connect sensor platform."""
+"""Sensor mapping against payloads captured from the live API.
+
+The integration previously read camelCase keys the API never returns, so every
+sensor silently produced None. These assert the real snake_case contract.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import pytest
 
-from homeassistant.core import HomeAssistant
-
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from .conftest import MOCK_PRINTER_DATA, MOCK_PRINTER_UUID
+from custom_components.prusa_connect.const import PrinterState
+from custom_components.prusa_connect.sensor import SENSOR_DESCRIPTIONS
 
 
-async def test_sensor_entities_created(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-) -> None:
-    """Test that sensor entities are created with correct state."""
-    state = hass.states.get("sensor.my_mk4s_state")
-    assert state is not None
-    assert state.state == "IDLE"
-
-    state = hass.states.get("sensor.my_mk4s_nozzle_temperature")
-    assert state is not None
-    assert state.state == "21.5"
-
-    state = hass.states.get("sensor.my_mk4s_bed_temperature")
-    assert state is not None
-    assert state.state == "22.3"
-
-    state = hass.states.get("sensor.my_mk4s_material")
-    assert state is not None
-    assert state.state == "PLA"
-
-    state = hass.states.get("sensor.my_mk4s_firmware")
-    assert state is not None
-    assert state.state == "5.1.2"
+def _values(printer: dict, job: dict | None) -> dict:
+    """Evaluate every applicable sensor for a printer."""
+    return {
+        d.key: d.value_fn(printer, job)
+        for d in SENSOR_DESCRIPTIONS
+        if d.exists_fn(printer)
+    }
 
 
-async def test_job_sensors(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-) -> None:
-    """Test that job-related sensors show correct values."""
-    state = hass.states.get("sensor.my_mk4s_print_progress")
-    assert state is not None
-    assert state.state == "45.0"
-
-    state = hass.states.get("sensor.my_mk4s_current_job")
-    assert state is not None
-    assert state.state == "benchy.gcode"
-
-    state = hass.states.get("sensor.my_mk4s_job_state")
-    assert state is not None
-    assert state.state == "PRINTING"
-
-
-async def test_sensor_unavailable_when_offline(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test that temperature sensors become unavailable when offline."""
-    offline_data = {**MOCK_PRINTER_DATA, "state": "OFFLINE"}
-    mock_api.get_printer.return_value = offline_data
-
-    mock_config_entry.add_to_hass(hass)
-
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
-
-    state = hass.states.get("sensor.my_mk4s_nozzle_temperature")
-    assert state is not None
-    assert state.state == "unavailable"
-
-    # State sensor should still be available
-    state = hass.states.get("sensor.my_mk4s_state")
-    assert state is not None
-    assert state.state == "OFFLINE"
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("state", "IDLE"),
+        ("nozzle_temperature", 28.0),
+        ("nozzle_target_temperature", 0.0),
+        ("bed_temperature", 26.2),
+        ("bed_target_temperature", 0.0),
+        ("print_speed", 100),
+        ("flow_factor", 100),
+        ("z_height", 2.0),
+        ("material", "PLA"),
+        ("firmware_version", "6.5.7+12836"),
+        ("serial_number", "SN-TEST-0001"),
+        ("job_state", "FIN_OK"),
+        ("time_elapsed", 1561),
+    ],
+)
+def test_sensor_values(printer, job, key, expected):
+    """Each sensor reads the field the API actually returns."""
+    assert _values(printer, job)[key] == expected
 
 
-async def test_sensor_no_job_data(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_api: AsyncMock,
-) -> None:
-    """Test sensor values when no job data is available."""
-    mock_api.get_jobs.return_value = []
+def test_current_job_uses_display_name(printer, job):
+    """The job name comes from the file's display name."""
+    assert _values(printer, job)["current_job"] == job["file"]["display_name"]
 
-    mock_config_entry.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.prusa_connect.PrusaConnectAPI",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.prusa_connect.async_get_clientsession",
-        ),
-    ):
-        await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
+def test_no_sensor_silently_returns_none(printer, job):
+    """Regression: camelCase keys made every sensor None."""
+    missing = [k for k, v in _values(printer, job).items() if v is None]
+    assert missing == []
 
-    state = hass.states.get("sensor.my_mk4s_print_progress")
-    assert state is not None
-    assert state.state == "unknown"
 
-    state = hass.states.get("sensor.my_mk4s_current_job")
-    assert state is not None
-    assert state.state == "unknown"
+def test_progress_is_clamped(printer, job):
+    """A job that overran its estimate must not exceed 100%."""
+    assert _values(printer, job)["print_progress"] == 100.0
+
+
+def test_time_remaining_never_negative(printer, job):
+    """Elapsed beyond the estimate yields zero, not a negative duration."""
+    assert _values(printer, job)["time_remaining"] == 0
+
+
+def test_live_job_info_wins_over_estimate(printer, job):
+    """While printing, Connect's own figures take precedence."""
+    printing = {**printer, "job_info": {"progress": 42, "time_remaining": 600,
+                                        "time_printing": 120}}
+    values = _values(printing, job)
+    assert values["print_progress"] == 42
+    assert values["time_remaining"] == 600
+    assert values["time_elapsed"] == 120
+
+
+def test_fractional_progress_is_scaled(printer, job):
+    """Connect reports progress as either a fraction or a percentage."""
+    printing = {**printer, "job_info": {"progress": 0.25}}
+    assert _values(printing, job)["print_progress"] == 25.0
+
+
+def test_unknown_state_is_normalised(printer, job):
+    """An unrecognised state maps to UNKNOWN so the enum stays valid."""
+    odd = {**printer, "printer_state": "SOMETHING_NEW"}
+    assert _values(odd, job)["state"] == PrinterState.UNKNOWN.value
+
+
+def test_state_options_cover_the_api(printer, job, supported_commands):
+    """Every state the API can issue commands from must be a known option."""
+    options = {s.value for s in PrinterState}
+    api_states = {
+        state
+        for command in supported_commands
+        for state in command["executable_from_state"]
+    }
+    assert api_states <= options
+
+
+def test_sensors_unavailable_when_offline(printer):
+    """Temperatures are meaningless for an offline printer."""
+    offline = {**printer, "printer_state": "OFFLINE"}
+    temp = next(d for d in SENSOR_DESCRIPTIONS if d.key == "nozzle_temperature")
+    assert temp.available_fn(offline) is False
+    assert temp.available_fn(printer) is True
+
+
+def test_missing_job_yields_no_job_sensors(printer):
+    """With no job, job-derived sensors are None rather than raising."""
+    values = _values(printer, None)
+    for key in ("current_job", "job_state", "print_progress", "time_remaining"):
+        assert values[key] is None
