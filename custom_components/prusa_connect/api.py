@@ -16,9 +16,12 @@ import aiohttp
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .auth import AuthenticationError, refresh_access_token
+from .webrtc_protocol import has_turn_server, trim_ice_servers
 from .const import (
     API_BASE_URL,
     API_PREFIX,
+    ENVIRONMENT_DEFAULTS,
+    ENVIRONMENT_URL,
     CMD_CANCEL_READY,
     CMD_DIALOG_ACTION,
     CMD_PAUSE,
@@ -269,6 +272,75 @@ class PrusaConnectAPI:
         return await self.get_bytes(
             f"{API_PREFIX}/cameras/{camera_id}/snapshots/last"
         )
+
+    async def get_environment(self) -> dict[str, str]:
+        """Read Connect's runtime configuration.
+
+        The camera hosts are published here rather than being fixed, so reading
+        them keeps us pointed at whatever Prusa currently deploy. Falls back to
+        the known defaults if the document cannot be read or parsed.
+        """
+        env: dict[str, str] = {}
+        try:
+            async with self._session.get(
+                ENVIRONMENT_URL, timeout=REQUEST_TIMEOUT
+            ) as resp:
+                resp.raise_for_status()
+                text = await resp.text()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Could not read environment.js, using defaults: %s", err)
+            return dict(ENVIRONMENT_DEFAULTS)
+
+        for line in text.splitlines():
+            if not line.startswith("window.") or "=" not in line:
+                continue
+            key, _, value = line[len("window.") :].partition("=")
+            env[key.strip()] = value.strip().rstrip(";").strip().strip("'\"")
+
+        return {**ENVIRONMENT_DEFAULTS, **{k: v for k, v in env.items() if v}}
+
+    async def get_webrtc_config(self, url: str) -> dict:
+        """Fetch ICE servers for a camera WebRTC session.
+
+        Raises ``ConfigEntryAuthFailed`` when the response contains no TURN
+        server. That is not a transient error: the camera service only issues
+        TURN credentials for tokens carrying a ``connect_id`` claim, which
+        requires the ``connect`` OAuth scope. Tokens minted before that scope
+        was requested authenticate perfectly well for every other endpoint, so
+        without this check the camera would simply never connect and give no
+        clue why.
+        """
+        headers = {"Authorization": f"Bearer {self._access_token}"}
+
+        for attempt in (1, 2):
+            async with self._session.get(
+                url, headers=headers, timeout=REQUEST_TIMEOUT
+            ) as resp:
+                if resp.status == 401 and attempt == 1:
+                    await self._refresh_token_and_persist()
+                    headers = {"Authorization": f"Bearer {self._access_token}"}
+                    continue
+                resp.raise_for_status()
+                payload = await resp.json()
+                break
+        else:  # pragma: no cover - loop always breaks or raises
+            raise ConfigEntryAuthFailed("Could not fetch WebRTC configuration")
+
+        config = payload.get("configuration", payload)
+        servers = config.get("iceServers") or []
+
+        if not has_turn_server(servers):
+            raise ConfigEntryAuthFailed(
+                "Prusa Connect returned no TURN server for this account. The "
+                "stored token predates the 'connect' OAuth scope; please "
+                "reauthenticate to enable camera streaming."
+            )
+
+        return {
+            "ice_servers": trim_ice_servers(servers),
+            "policy": config.get("iceTransportPolicy"),
+            "ttl": int(payload.get("ttl") or 0),
+        }
 
     # --- Notifications / events ---
 

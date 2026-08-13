@@ -23,6 +23,16 @@ AUTH_REDIRECT_URI: Final = "https://connect.prusa3d.com/login/auth-callback"
 # still produces `connect_id`.
 AUTH_SCOPE: Final = "basic_info user_operations email_lists openid connect"
 
+# Camera streaming. Connect publishes the camera hosts in a runtime document
+# rather than fixing them, so read them from there and treat these as fallbacks.
+ENVIRONMENT_URL: Final = f"{API_BASE_URL}/environment.js"
+ENVIRONMENT_DEFAULTS: Final = {
+    "CAMERA_SIGNALING_SERVER": "camera-signaling.prusa3d.com",
+    "CAMERA_WEBRTC_CONFIG_URL": (
+        "https://camera-service-api.prusa3d.com/v1/camera-webrtc-config"
+    ),
+}
+
 # Config entry keys
 CONF_ACCESS_TOKEN: Final = "access_token"
 CONF_REFRESH_TOKEN: Final = "refresh_token"

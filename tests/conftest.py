@@ -174,7 +174,20 @@ def _install_homeassistant_stubs() -> None:
     image.ImageEntity = type("ImageEntity", (), {"__init__": lambda self, *a, **k: None})
 
 
+def _install_socketio_stub() -> None:
+    """Stub python-socketio so signalling logic is testable without the dep.
+
+    Tests substitute their own recording client for ``AsyncClient``; this only
+    needs to exist so the import succeeds.
+    """
+    if "socketio" in sys.modules:
+        return
+    socketio = _module("socketio")
+    socketio.AsyncClient = type("AsyncClient", (), {})
+
+
 _install_homeassistant_stubs()
+_install_socketio_stub()
 
 
 def _load(name: str) -> dict:

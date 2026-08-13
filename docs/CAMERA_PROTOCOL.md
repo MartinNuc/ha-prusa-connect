@@ -242,17 +242,15 @@ produce timelapses server-side.** Worth checking before building our own.
 
 ## Open questions
 
-- **Codec negotiated** by the camera (H.264 vs VP8) — decides whether a relay
-  can forward RTP untouched or must transcode. `scripts/webrtc_poc.py` exists
-  to answer this; it is the one unknown that can still change the design.
-- **`Endpoint` encoding.** The frontend splits ICE URLs into a structured
-  message (`scheme_type`, `address`, `port`, `transport_protocol`) whose enum
-  values are unconfirmed. The PoC sends plain URL strings instead; if the
-  server rejects the `REQUEST`, this is the first thing to revisit.
-- **Numeric values** for `SchemeType`, `TransportProtocol`, and
-  `WebRtcStreamStatus` (only `MessageType` is confirmed).
+- **`WebRtcStreamStatus` values** — the field is never populated in anything
+  captured so far, and we never send it.
 - **Session limits** — whether Connect caps concurrent viewers per camera, and
   whether an integration session conflicts with a browser one.
+- **Minimum OAuth scope** that still yields `connect_id`. We request what the
+  web app requests; `openid connect` alone may well be enough, and asking for
+  `email_lists` in a printer integration is hard to justify.
+- **The `configuration` event** (28–30 bytes, client to server) appears in some
+  captures and not others, and streaming works without it. Purpose unknown.
 
 ## Reference hardware
 
@@ -270,13 +268,61 @@ Note this is a third-party camera, not Prusa-branded — so the protocol is not
 specific to any one vendor's hardware. Gate features on the `features` list
 rather than assuming.
 
-## Integration design sketch
+## Integration design
 
-Home Assistant's WebRTC camera API expects the integration to *answer* an offer
-from the frontend. Prusa also expects us to answer. Both sides offer, so SDP
-cannot simply be relayed — the session has to be terminated on both sides and
-the media forwarded between them (e.g. `aiortc` + `MediaRelay`), or bridged out
-as RTSP and consumed via go2rtc.
+### What is implemented
 
-Prefer forwarding without transcoding: an HA host should not be re-encoding
-H.264. Confirm the negotiated codec early, since it determines feasibility.
+- `webrtc_protocol.py` — the wire codec and message builders. Pure functions,
+  no I/O, tested byte-for-byte against captured payloads.
+- `signaling.py` — the Socket.IO session: authenticate, wake the camera, ask
+  for a stream, shuttle SDP and candidates. Knows nothing about WebRTC itself,
+  so the media layer stays swappable.
+- `api.get_webrtc_config()` — fetches ICE servers, trims them, and raises
+  `ConfigEntryAuthFailed` when no TURN server comes back (the reauth signal for
+  the scope problem above).
+- `scripts/webrtc_poc.py` — a live check that imports the modules above, so a
+  successful run validates what ships rather than a parallel copy.
+
+Verified against the live service: `codecs: H264`, ~665 RTP packets in 20 s.
+
+### The media path — still to decide
+
+This is the open design question, and it is not a detail.
+
+Home Assistant's WebRTC camera API expects the integration to **answer** an
+offer from the frontend. Prusa's camera also **offers**, expecting us to
+answer. Both sides offer, so SDP cannot simply be relayed. The session has to
+be terminated on both sides and media forwarded between them.
+
+The catch is cost. `aiortc`'s `MediaRelay` relays *decoded* frames, so
+forwarding through it re-encodes 1080p H.264 for every viewer — exactly the
+load a Home Assistant host should not take on. Since the camera already speaks
+H.264, which is also what HomeKit wants, a passthrough is possible in principle
+and worth real effort to achieve.
+
+Options, roughly in order of preference:
+
+1. **RTP passthrough via aiortc** — intercept encoded frames before the
+   decoder and republish without re-encoding. Cheapest at runtime, but aiortc
+   exposes no public API for this, so it means working against internals.
+2. **Bridge to RTSP, consume via go2rtc** — run the signalling client as a
+   go2rtc `exec:` source that emits RTSP. go2rtc starts it only when a
+   consumer connects, which gives on-demand behaviour for free and makes
+   HomeKit-via-Scrypted and recording trivial. Still needs a way to get
+   encoded frames out without transcoding.
+3. **Transcode and accept the cost** — simplest, and viable for a single
+   viewer on capable hardware. Should be measured before being ruled in or out.
+
+Whichever is chosen, sessions should be held only while somebody is watching:
+the web app tears its own down when the tab is hidden, and the stream is
+relayed through Prusa's TURN infrastructure.
+
+### Session behaviour
+
+- Ask for `get_status` / `get_features` and wait for a reply before requesting
+  a stream. The camera does not announce itself.
+- Wait for the `client_authentication` ack before sending anything else.
+- ICE credentials carry a 300 s TTL; refresh before it expires on long sessions.
+- Whether Connect caps concurrent viewers per camera is untested. A browser
+  session open at the same time did not visibly block a second one, but this
+  deserves confirmation before release.

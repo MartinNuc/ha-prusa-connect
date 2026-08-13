@@ -6,5 +6,6 @@
   "documentation": "https://github.com/MartinNuc/ha-prusa-connect",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
+  "requirements": ["python-socketio[asyncio_client]==5.13.0"],
   "version": "0.2.0"
 }
