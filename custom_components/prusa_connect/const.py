@@ -16,7 +16,12 @@ AUTH_TOKEN_URL: Final = "https://account.prusa3d.com/o/token/"
 AUTH_LOGIN_URL: Final = "https://account.prusa3d.com/login/"
 AUTH_CLIENT_ID: Final = "MRHTlZhZqkNrrQ6FUPtjyusAz8nc59ErHXP8XkS4"
 AUTH_REDIRECT_URI: Final = "https://connect.prusa3d.com/login/auth-callback"
-AUTH_SCOPE: Final = "openid"
+# "openid" alone yields a token with no `connect_id` claim. The camera service
+# mints TURN credentials as `<expiry>:<connect_id>`, so a narrow scope silently
+# returns STUN-only ICE config and WebRTC never establishes. This mirrors the
+# scope the Connect web app requests; trim it once we know the minimum that
+# still produces `connect_id`.
+AUTH_SCOPE: Final = "basic_info user_operations email_lists openid connect"
 
 # Config entry keys
 CONF_ACCESS_TOKEN: Final = "access_token"
