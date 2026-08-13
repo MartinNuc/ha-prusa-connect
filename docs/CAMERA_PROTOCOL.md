@@ -303,15 +303,38 @@ and worth real effort to achieve.
 Options, roughly in order of preference:
 
 1. **RTP passthrough via aiortc** — intercept encoded frames before the
-   decoder and republish without re-encoding. Cheapest at runtime, but aiortc
-   exposes no public API for this, so it means working against internals.
+   decoder and republish without re-encoding. Cheapest at runtime. There is no
+   public API, but the interception point is well defined (below).
 2. **Bridge to RTSP, consume via go2rtc** — run the signalling client as a
    go2rtc `exec:` source that emits RTSP. go2rtc starts it only when a
    consumer connects, which gives on-demand behaviour for free and makes
-   HomeKit-via-Scrypted and recording trivial. Still needs a way to get
-   encoded frames out without transcoding.
+   HomeKit-via-Scrypted and recording trivial. Builds on option 1 for the
+   frames.
 3. **Transcode and accept the cost** — simplest, and viable for a single
    viewer on capable hardware. Should be measured before being ruled in or out.
+
+#### Where to intercept encoded frames (aiortc 1.15)
+
+`RTCRtpReceiver._handle_rtp_packet` depayloads each packet, reassembles it via
+the jitter buffer, and only then hands the result to a decoder thread:
+
+```python
+pli_flag, encoded_frame = self.__jitter_buffer.add(packet)
+...
+if encoded_frame is not None and self.__decoder_thread:
+    encoded_frame.timestamp = self.__timestamp_mapper.map(encoded_frame.timestamp)
+    self.__decoder_queue.put((codec, encoded_frame))
+```
+
+`encoded_frame` is a `JitterFrame(data: bytes, timestamp: int)` holding a
+complete, still-encoded H.264 frame. Capturing it — for example by substituting
+the private `__decoder_queue` before the decoder thread starts — yields encoded
+frames with no decode step at all. Note the guard: when no decoder thread is
+running the frame is discarded, so simply not decoding is not enough.
+
+This relies on private attributes and is therefore tied to the aiortc version;
+pin it and cover it with a test that fails loudly if the internals move.
+Prototype and measure before committing to this route.
 
 Whichever is chosen, sessions should be held only while somebody is watching:
 the web app tears its own down when the tab is hidden, and the stream is
