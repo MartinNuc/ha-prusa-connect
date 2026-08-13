@@ -313,28 +313,49 @@ Options, roughly in order of preference:
 3. **Transcode and accept the cost** — simplest, and viable for a single
    viewer on capable hardware. Should be measured before being ruled in or out.
 
-#### Where to intercept encoded frames (aiortc 1.15)
+#### Encoded-frame passthrough — verified
 
-`RTCRtpReceiver._handle_rtp_packet` depayloads each packet, reassembles it via
-the jitter buffer, and only then hands the result to a decoder thread:
+Passthrough works, so option 1 is available and nothing needs transcoding.
+
+`RTCRtpReceiver` reassembles a complete encoded frame and only then hands it to
+a decoder thread, which obtains its decoder from the module-level
+`aiortc.rtcrtpreceiver.get_decoder`. Substituting that factory yields the
+encoded frames and decodes nothing:
 
 ```python
-pli_flag, encoded_frame = self.__jitter_buffer.add(packet)
-...
-if encoded_frame is not None and self.__decoder_thread:
-    encoded_frame.timestamp = self.__timestamp_mapper.map(encoded_frame.timestamp)
-    self.__decoder_queue.put((codec, encoded_frame))
+class CapturingDecoder:
+    def decode(self, encoded_frame):      # JitterFrame(data: bytes, timestamp: int)
+        sink.append(bytes(encoded_frame.data))
+        return []                          # nothing to hand onward
+
+aiortc.rtcrtpreceiver.get_decoder = lambda codec: CapturingDecoder()
 ```
 
-`encoded_frame` is a `JitterFrame(data: bytes, timestamp: int)` holding a
-complete, still-encoded H.264 frame. Capturing it — for example by substituting
-the private `__decoder_queue` before the decoder thread starts — yields encoded
-frames with no decode step at all. Note the guard: when no decoder thread is
-running the frame is discarded, so simply not decoding is not enough.
+Prefer this seam over the receiver's private `__decoder_queue`: it is a plain
+module attribute, so it survives more aiortc versions and is far easier to
+assert on. Note the frames are only produced while a decoder thread exists, so
+suppressing decoding by other means does not work — the frames are dropped.
 
-This relies on private attributes and is therefore tied to the aiortc version;
-pin it and cover it with a test that fails loudly if the internals move.
-Prototype and measure before committing to this route.
+`scripts/passthrough_probe.py` does this against the live camera and parses the
+result back with PyAV. Measured over 10 s:
+
+```
+119 frames, 325 KiB (~11.9 fps, ~266 kbit/s)
+codec h264, 640x480, 113 of 119 frames decoded
+```
+
+The frames that do not decode are the leading ones, captured before the first
+parameter sets and keyframe arrive — expected when joining a stream mid-GOP.
+A real implementation should hold frames until the first keyframe.
+
+#### Stream resolution is lower than the snapshots
+
+The live stream is **640x480**, while `/snapshots/last` and the camera's
+advertised resolution are 1920x1080. Whether that is fixed, adaptive, or
+selectable is unknown — the camera does advertise `VideoQuality` and
+`TurnVideoQualityChange`, and the unexplained `configuration` message the web
+app sometimes sends is a plausible way it gets set. Worth investigating before
+promising HomeKit users a 1080p feed.
 
 Whichever is chosen, sessions should be held only while somebody is watching:
 the web app tears its own down when the tab is hidden, and the stream is
