@@ -272,6 +272,16 @@ rather than assuming.
 
 ### What is implemented
 
+- `camera.py` — the Home Assistant entity. Serves snapshots always, and live
+  WebRTC video for cameras advertising the `WebRtc` feature. Sessions are
+  created per viewer and closed when the viewer leaves or the entity is
+  removed.
+- `webrtc_session.py` — bridges one viewer to one camera: terminates WebRTC on
+  both sides and forwards media across.
+- `scripts/bridge_probe.py` — drives the bridge with a local aiortc peer in
+  place of the HA frontend. Verified live: video reaches the viewer.
+
+
 - `webrtc_protocol.py` — the wire codec and message builders. Pure functions,
   no I/O, tested byte-for-byte against captured payloads.
 - `signaling.py` — the Socket.IO session: authenticate, wake the camera, ask
@@ -299,6 +309,13 @@ forwarding through it re-encodes 1080p H.264 for every viewer — exactly the
 load a Home Assistant host should not take on. Since the camera already speaks
 H.264, which is also what HomeKit wants, a passthrough is possible in principle
 and worth real effort to achieve.
+
+**What ships today is option 3, `MediaRelay`.** It uses only aiortc's public API
+and works: `scripts/bridge_probe.py` gets video through to a stand-in viewer.
+But the re-encode is not free — measured on a modest host, roughly 12 fps
+arrived from the camera and roughly 6 fps reached the viewer. Acceptable for
+glancing at a print, and the resolution is configurable in the Connect web UI,
+so anyone raising it will feel this sooner. Moving to passthrough is the fix.
 
 Options, roughly in order of preference:
 

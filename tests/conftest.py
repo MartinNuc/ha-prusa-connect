@@ -20,7 +20,7 @@ import json
 import sys
 import types
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import IntFlag, StrEnum
 from pathlib import Path
 
 import pytest
@@ -41,6 +41,29 @@ class _Subscriptable:
 
     def __class_getitem__(cls, item):  # noqa: D105
         return cls
+
+
+async def _noop_coroutine(*_args, **_kwargs) -> None:
+    """Stand-in for HA base-class coroutines the integration calls via super()."""
+
+
+def _attr_property(name: str, default=None) -> property:
+    """Mirror HA's convention of exposing ``_attr_x`` as the property ``x``."""
+    return property(lambda self: getattr(self, f"_attr_{name}", default))
+
+
+def _dataclass_like(name: str, field: str) -> type:
+    """A tiny value object mirroring HA's WebRTC message types."""
+
+    def __init__(self, value) -> None:  # noqa: ANN001
+        setattr(self, field, value)
+
+    def __eq__(self, other) -> bool:  # noqa: ANN001
+        return isinstance(other, type(self)) and getattr(self, field) == getattr(
+            other, field
+        )
+
+    return type(name, (), {"__init__": __init__, "__eq__": __eq__})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -85,6 +108,7 @@ def _install_homeassistant_stubs() -> None:
     )
 
     exceptions = _module("homeassistant.exceptions")
+    exceptions.HomeAssistantError = type("HomeAssistantError", (Exception,), {})
     exceptions.ConfigEntryAuthFailed = type("ConfigEntryAuthFailed", (Exception,), {})
     exceptions.ServiceValidationError = type(
         "ServiceValidationError", (Exception,), {}
@@ -168,10 +192,53 @@ def _install_homeassistant_stubs() -> None:
     button.ButtonEntity = type("ButtonEntity", (), {})
 
     camera = _module("homeassistant.components.camera")
-    camera.Camera = type("Camera", (), {"__init__": lambda self, *a, **k: None})
+    camera.Camera = type(
+        "Camera",
+        (),
+        {
+            "__init__": lambda self, *a, **k: None,
+            "async_will_remove_from_hass": _noop_coroutine,
+            # HA's Entity exposes _attr_* through properties; mirror the few
+            # the camera entity sets so tests can read them as HA would.
+            "unique_id": _attr_property("unique_id"),
+            "name": _attr_property("name"),
+            "is_streaming": _attr_property("is_streaming", False),
+            "supported_features": _attr_property("supported_features", 0),
+            "frame_interval": _attr_property("frame_interval", 0.0),
+        },
+    )
+    camera.CameraEntityFeature = IntFlag("CameraEntityFeature", {"STREAM": 2})
+    camera.WebRTCAnswer = _dataclass_like("WebRTCAnswer", "answer")
+    camera.WebRTCCandidate = _dataclass_like("WebRTCCandidate", "candidate")
+    camera.WebRTCSendMessage = object
 
     image = _module("homeassistant.components.image")
     image.ImageEntity = type("ImageEntity", (), {"__init__": lambda self, *a, **k: None})
+
+
+def _install_aiortc_stub() -> None:
+    """Stub aiortc so camera logic is testable without the media stack.
+
+    Tests substitute their own stream session, so none of this is exercised —
+    it only needs to import.
+    """
+    if "aiortc" in sys.modules:
+        return
+    aiortc = _module("aiortc")
+    for name in (
+        "RTCConfiguration",
+        "RTCIceServer",
+        "RTCPeerConnection",
+        "RTCSessionDescription",
+    ):
+        setattr(aiortc, name, type(name, (), {"__init__": lambda self, *a, **k: None}))
+
+    media = _module("aiortc.contrib.media")
+    media.MediaRelay = type("MediaRelay", (), {"__init__": lambda self, *a, **k: None})
+    _module("aiortc.contrib").media = media
+
+    sdp = _module("aiortc.sdp")
+    sdp.candidate_from_sdp = lambda value: value
 
 
 def _install_socketio_stub() -> None:
@@ -188,6 +255,7 @@ def _install_socketio_stub() -> None:
 
 _install_homeassistant_stubs()
 _install_socketio_stub()
+_install_aiortc_stub()
 
 
 def _load(name: str) -> dict:

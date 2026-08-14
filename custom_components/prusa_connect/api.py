@@ -58,6 +58,15 @@ class PrusaConnectAPI:
         self._access_token = access_token
         self._refresh_token = refresh_token
 
+    @property
+    def access_token(self) -> str:
+        """The current access token.
+
+        Camera signalling authenticates over a WebSocket rather than through
+        this client, so it needs the token itself.
+        """
+        return self._access_token
+
     async def _request(
         self,
         method: str,
