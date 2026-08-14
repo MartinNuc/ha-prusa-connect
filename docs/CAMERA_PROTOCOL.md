@@ -295,6 +295,20 @@ rather than assuming.
 
 Verified against the live service: `codecs: H264`, ~665 RTP packets in 20 s.
 
+### Dependencies
+
+Streaming pulls in `aiortc` and `python-socketio`. One constraint is worth
+knowing before bumping either:
+
+**aiortc 1.11.0 and later require `pyopenssl>=25.0.0`**, while 1.10.1 and
+earlier accept `>=24.0.0`. Home Assistant pins pyOpenSSL, and older releases
+(2025.1, for instance) pin 24.3.0 — installing a recent aiortc there would try
+to upgrade a package HA has pinned. If the integration has to support those
+releases, pin `aiortc==1.10.1` instead; that combination has not been tested
+here, so verify it before relying on it.
+
+The pinned `aiortc==1.15.0` is what every live test above ran against.
+
 ### The media path — still to decide
 
 This is the open design question, and it is not a detail.
