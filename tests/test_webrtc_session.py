@@ -202,6 +202,19 @@ class TestDiagnosis:
             await task
 
     @pytest.mark.asyncio
+    async def test_blames_the_relay_on_a_timeout_too(self) -> None:
+        """The observed case: no relay leaves ICE stuck, it never says "failed"."""
+        session = make_session()
+        task = asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        upstream = _FakePeerConnection.instances[0]
+        upstream.localDescription = _Description(HOST_ONLY_SDP)
+        await upstream.fire("track", _Track())
+
+        with pytest.raises(SignalingError, match="TURN"):
+            await task
+
+    @pytest.mark.asyncio
     async def test_does_not_blame_the_relay_when_we_had_one(self) -> None:
         session = make_session()
         with pytest.raises(SignalingError) as caught:

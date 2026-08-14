@@ -166,9 +166,16 @@ class CameraStreamSession:
         # before any media can flow. Answering the viewer here would hand the
         # frontend a stream that never produces a frame — a spinner forever, and
         # a session nobody tears down. Wait for the connection itself.
-        if not await _before(
-            self._upstream_live, deadline, "the camera stream did not connect"
-        ):
+        #
+        # Timing out and failing outright get the same explanation: a missing
+        # relay strands the connection in "checking" rather than failing it, so
+        # the timeout is the path that most needs the diagnosis.
+        try:
+            connected = await _before(self._upstream_live, deadline, "connecting")
+        except SignalingError as err:
+            raise SignalingError(self._connect_failure()) from err
+
+        if not connected:
             raise SignalingError(self._connect_failure())
 
         return track
@@ -186,11 +193,11 @@ class CameraStreamSession:
         sdp = pc.localDescription.sdp if pc and pc.localDescription else ""
         if "typ relay" not in sdp:
             return (
-                "could not allocate a relay on Prusa's TURN server, so there is "
+                "Could not allocate a relay on Prusa's TURN server, so there was "
                 "no route to the camera. This usually clears on its own after a "
                 "few minutes"
             )
-        return "the camera stream did not connect"
+        return "The camera stream did not connect"
 
     async def _async_abandon(self) -> None:
         """Close a session whose camera connection died, and say so."""
