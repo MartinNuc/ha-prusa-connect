@@ -51,6 +51,10 @@ SESSION_ID = "SOCKETIOSESSION00000"
 TRIGGER_GET_STATUS = base64.b64decode("CAFaFENBTUVSQVRPS0VOMDAwMDAwMDAw")
 TRIGGER_GET_FEATURES = base64.b64decode("EAFaFENBTUVSQVRPS0VOMDAwMDAwMDAw")
 
+# Captured: the `configuration` the web app sends when the quality dropdown is
+# moved from SD to FHD, 28 bytes.
+CONFIGURATION_SET_FHD = base64.b64decode("IgAyFENBTUVSQVRPS0VOMDAwMDAwMDAwQgIIAw==")
+
 # Captured: the web app's WebRTC REQUEST, 272 bytes.
 WEBRTC_REQUEST = base64.b64decode(
     "ChRDQU1FUkFUT0tFTjAwMDAwMDAwMBIUU09DS0VUSU9TRVNTSU9OMDAwMDAaFFNPQ0tFVElP"
@@ -113,6 +117,18 @@ class TestCommands:
 
 class TestVideoConfiguration:
     """The `configuration` message that sets live stream resolution."""
+
+    def test_matches_capture(self) -> None:
+        """Byte-for-byte against the web app switching SD -> FHD.
+
+        This is what pins the empty `system` field: drop it and the message is
+        still valid protobuf and still acked, it just stops matching what the
+        camera is known to accept.
+        """
+        assert (
+            build_video_configuration(CAMERA_TOKEN, VideoQuality.FHD)
+            == CONFIGURATION_SET_FHD
+        )
 
     def test_carries_token_and_nested_quality(self) -> None:
         fields = pb_decode(

@@ -237,6 +237,12 @@ camera's own `status` keeps reporting `video.quality=SD`. The request is not
 being rejected: the signalling server acks the `configuration` event with the
 same success code it acks authentication with. The camera simply declines.
 
+The web app is not exempt: its quality dropdown can be moved to FHD and emits
+exactly the same 28 bytes, but the stream reverts to SD as soon as it plays.
+The relay check that is supposed to disable the selector evidently does not
+fire, so the UI offers a choice the camera then refuses. Our client is not
+doing anything the browser does not.
+
 So the setter is correct and worth sending; whether it does anything depends on
 whether the connection is relayed, which is a property of the two networks
 rather than of this code. `scripts/status_probe.py` reads the camera's reported
@@ -322,7 +328,17 @@ produce timelapses server-side.** Worth checking before building our own.
 - **Minimum OAuth scope** that still yields `connect_id`. We request what the
   web app requests; `openid connect` alone may well be enough, and asking for
   `email_lists` in a printer integration is hard to justify.
-- **No server-reflexive candidate is gathered, so every path relays.** The
+- **The camera never gathers a server-reflexive candidate**, so no viewer off
+  its LAN can ever reach it directly. It offers exactly two things: its private
+  LAN address (`192.168.0.114/host`) and a TURN relay candidate. Strip the relay
+  and the connection cannot be established at all. This is the root cause of the
+  SD cap — quality is only unlocked on a non-relayed connection, and a
+  non-relayed connection is only possible from the camera's own network.
+  Everything below about our own STUN gathering is therefore moot for remote
+  viewers; it would only matter for a same-LAN install, where the host candidate
+  already wins.
+
+- **Our own ICE never gathers srflx either.** The
   config endpoint returns `stun:stun.l.google.com:5349` first, and 5349 is the
   STUN-over-TLS port — plain STUN there times out. Browsers query every STUN
   server, but aiortc/aioice use only the **first**, so gathering silently
