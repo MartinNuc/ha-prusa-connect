@@ -281,11 +281,15 @@ async def _before(future: asyncio.Future, deadline: float, what: str) -> Any:
 
 
 def _to_aiortc(ice_servers: list[dict[str, Any]]) -> RTCConfiguration:
-    """Translate Connect's ICE configuration into aiortc's form."""
+    """Translate Connect's ICE configuration into aiortc's form.
+
+    Only the ordering differs from what Connect sends, and only for STUN — the
+    list handed to the camera must stay byte-identical to the browser's.
+    """
     return RTCConfiguration(
         iceServers=[
             RTCIceServer(
-                urls=(
+                urls=_order_urls(
                     server["urls"]
                     if isinstance(server["urls"], list)
                     else [server["urls"]]
@@ -296,3 +300,24 @@ def _to_aiortc(ice_servers: list[dict[str, Any]]) -> RTCConfiguration:
             for server in ice_servers
         ]
     )
+
+
+def _order_urls(urls: list[str]) -> list[str]:
+    """Put a UDP-reachable STUN URL first.
+
+    aioice uses only the *first* STUN server it is given, and speaks STUN over
+    UDP only. Connect lists ``stun:stun.l.google.com:5349`` first — 5349 is the
+    TLS port, so the binding request goes nowhere, no server-reflexive candidate
+    is gathered, and the only address we can offer is a private one. A browser
+    tries every URL and never notices the difference.
+
+    Without a reflexive candidate the sole workable pair is relay-to-relay,
+    which forces an allocation on Prusa's quota-limited TURN server for what
+    should be an ordinary NAT traversal.
+
+    TURN is left alone: aioice does speak TURN over TLS, and the ``turns:`` URL
+    Connect puts first works.
+    """
+    if not all(str(url).startswith("stun:") for url in urls):
+        return urls
+    return sorted(urls, key=lambda url: ":5349" in str(url))

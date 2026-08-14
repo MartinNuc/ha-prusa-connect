@@ -237,11 +237,16 @@ def _install_homeassistant_stubs() -> None:
 def _install_aiortc_stub() -> None:
     """Stub aiortc so camera logic is testable without the media stack.
 
-    Tests substitute their own stream session, so none of this is exercised —
-    it only needs to import.
+    Tests mostly substitute their own stream session, but the ICE configuration
+    we hand aiortc is our own logic and worth asserting on, so the stubs keep
+    their keyword arguments rather than discarding them.
     """
     if "aiortc" in sys.modules:
         return
+
+    def _keep_kwargs(self, *_args, **kwargs) -> None:  # noqa: ANN001
+        self.__dict__.update(kwargs)
+
     aiortc = _module("aiortc")
     for name in (
         "RTCConfiguration",
@@ -249,7 +254,7 @@ def _install_aiortc_stub() -> None:
         "RTCPeerConnection",
         "RTCSessionDescription",
     ):
-        setattr(aiortc, name, type(name, (), {"__init__": lambda self, *a, **k: None}))
+        setattr(aiortc, name, type(name, (), {"__init__": _keep_kwargs}))
 
     media = _module("aiortc.contrib.media")
     media.MediaRelay = type("MediaRelay", (), {"__init__": lambda self, *a, **k: None})

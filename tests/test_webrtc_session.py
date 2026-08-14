@@ -222,6 +222,48 @@ class TestDiagnosis:
         assert "TURN" not in str(caught.value)
 
 
+class TestIceServerOrdering:
+    """aioice uses only the first STUN server, so which one is first matters."""
+
+    def test_a_udp_stun_url_goes_first(self) -> None:
+        """Measured: :5349 yields no srflx, :3478 does.
+
+        Without a reflexive candidate the only workable pair is relay-to-relay,
+        which spends an allocation on a quota-limited server for what should be
+        ordinary NAT traversal.
+        """
+        assert ws._order_urls(
+            ["stun:stun.l.google.com:5349", "stun:stun1.l.google.com:3478"]
+        ) == ["stun:stun1.l.google.com:3478", "stun:stun.l.google.com:5349"]
+
+    def test_an_already_usable_order_is_kept(self) -> None:
+        urls = ["stun:stun1.l.google.com:3478", "stun:stun.l.google.com:5349"]
+        assert ws._order_urls(urls) == urls
+
+    def test_turn_is_left_exactly_as_connect_sent_it(self) -> None:
+        """aioice does speak TURN over TLS, and turns: first is what works."""
+        urls = [
+            "turns:coturn.prusa3d.com:5349",
+            "turn:coturn.prusa3d.com:3478?transport=udp",
+        ]
+        assert ws._order_urls(urls) == urls
+
+    def test_the_config_we_build_reorders_stun_only(self) -> None:
+        config = ws._to_aiortc(
+            [
+                {
+                    "urls": ["turns:coturn.prusa3d.com:5349", "turn:x:3478"],
+                    "username": "u",
+                    "credential": "c",
+                },
+                {"urls": ["stun:a:5349", "stun:b:3478"]},
+            ]
+        )
+        assert config.iceServers[0].urls[0] == "turns:coturn.prusa3d.com:5349"
+        assert config.iceServers[1].urls[0] == "stun:b:3478"
+        assert config.iceServers[0].credential == "c"
+
+
 class TestLateFailure:
     """A stream that dies after the viewer is answered."""
 
