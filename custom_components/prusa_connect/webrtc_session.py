@@ -21,6 +21,7 @@ implementation before it is worth adopting.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -40,7 +41,9 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# How long to wait for the upstream camera track before giving up on a viewer.
+# How long to wait for the camera stream to come up before giving up on a viewer.
+# Covers negotiation *and* connection: a track object appears within a second of
+# the camera's offer, but ICE can take several seconds more over a relay.
 UPSTREAM_TIMEOUT = 30.0
 
 
@@ -54,19 +57,28 @@ class CameraStreamSession:
         webrtc_config_url: str,
         camera_token: str,
         access_token: str,
+        on_closed: Callable[[], None] | None = None,
     ) -> None:
-        """Initialize the session. Nothing is opened until :meth:`start`."""
+        """Initialize the session. Nothing is opened until :meth:`start`.
+
+        ``on_closed`` is called if the camera connection dies after the viewer
+        has been answered, so the owner can drop a session that is no longer
+        carrying anything.
+        """
         self._api = api
         self._signaling_host = signaling_host
         self._webrtc_config_url = webrtc_config_url
         self._camera_token = camera_token
         self._access_token = access_token
+        self._on_closed = on_closed
 
         self._signaling: PrusaCameraSignaling | None = None
         self._upstream: RTCPeerConnection | None = None
         self._downstream: RTCPeerConnection | None = None
         self._relay = MediaRelay()
         self._track_ready: asyncio.Future | None = None
+        self._upstream_live: asyncio.Future | None = None
+        self._answered = False
         self._closed = False
 
     async def start(self, offer_sdp: str) -> str:
@@ -77,13 +89,17 @@ class CameraStreamSession:
         """
         loop = asyncio.get_running_loop()
         self._track_ready = loop.create_future()
+        self._upstream_live = loop.create_future()
 
         try:
             track = await self._connect_upstream()
-            return await self._answer_downstream(offer_sdp, track)
+            answer = await self._answer_downstream(offer_sdp, track)
         except Exception:
             await self.close()
             raise
+
+        self._answered = True
+        return answer
 
     async def _connect_upstream(self):  # noqa: ANN202 - aiortc track type
         """Negotiate with the camera and return its video track."""
@@ -95,8 +111,23 @@ class CameraStreamSession:
         @pc.on("track")
         def _on_track(track) -> None:  # noqa: ANN001
             _LOGGER.debug("Camera track received (%s)", track.kind)
-            if self._track_ready is not None and not self._track_ready.done():
-                self._track_ready.set_result(track)
+            _resolve(self._track_ready, track)
+
+        @pc.on("connectionstatechange")
+        async def _on_upstream_state() -> None:
+            state = pc.connectionState
+            _LOGGER.debug("Camera connection: %s", state)
+            if state == "connected":
+                _resolve(self._upstream_live, True)
+            elif state in ("failed", "closed"):
+                # Before the viewer is answered this is a start-up failure; after
+                # it, the stream has died under a viewer who would otherwise sit
+                # watching a frozen picture while the session stayed open.
+                if not self._answered:
+                    _resolve(self._upstream_live, False)
+                elif not self._closed:
+                    _LOGGER.info("Camera connection %s; closing the session", state)
+                    asyncio.get_running_loop().create_task(self._async_abandon())
 
         async def on_offer(sdp: str) -> None:
             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
@@ -126,10 +157,46 @@ class CameraStreamSession:
             config["ice_servers"], config["policy"], config["ttl"]
         )
 
-        try:
-            return await asyncio.wait_for(self._track_ready, UPSTREAM_TIMEOUT)
-        except TimeoutError as err:
-            raise SignalingError("Camera produced no video track") from err
+        deadline = asyncio.get_running_loop().time() + UPSTREAM_TIMEOUT
+        track = await _before(
+            self._track_ready, deadline, "the camera sent no video track"
+        )
+
+        # A track object exists as soon as the camera's offer is applied, long
+        # before any media can flow. Answering the viewer here would hand the
+        # frontend a stream that never produces a frame — a spinner forever, and
+        # a session nobody tears down. Wait for the connection itself.
+        if not await _before(
+            self._upstream_live, deadline, "the camera stream did not connect"
+        ):
+            raise SignalingError(self._connect_failure())
+
+        return track
+
+    def _connect_failure(self) -> str:
+        """Explain a failed camera connection, checking the likeliest cause.
+
+        The camera offers only its own LAN address and a TURN relay, so when we
+        cannot allocate a relay of our own there is no path left and the failure
+        is certain rather than bad luck. Prusa's TURN server refuses further
+        allocations ("486 Allocation Quota Reached") after repeated attempts and
+        holds that state for several minutes.
+        """
+        pc = self._upstream
+        sdp = pc.localDescription.sdp if pc and pc.localDescription else ""
+        if "typ relay" not in sdp:
+            return (
+                "could not allocate a relay on Prusa's TURN server, so there is "
+                "no route to the camera. This usually clears on its own after a "
+                "few minutes"
+            )
+        return "the camera stream did not connect"
+
+    async def _async_abandon(self) -> None:
+        """Close a session whose camera connection died, and say so."""
+        await self.close()
+        if self._on_closed is not None:
+            self._on_closed()
 
     async def _answer_downstream(self, offer_sdp: str, track) -> str:  # noqa: ANN001
         """Answer the viewer, attaching the relayed camera track."""
@@ -184,6 +251,26 @@ class CameraStreamSession:
         self._signaling = None
         self._downstream = None
         self._upstream = None
+
+
+def _resolve(future: asyncio.Future | None, value: Any) -> None:
+    """Complete a future once, ignoring later or duplicate answers."""
+    if future is not None and not future.done():
+        future.set_result(value)
+
+
+async def _before(future: asyncio.Future, deadline: float, what: str) -> Any:
+    """Await a future against a shared deadline.
+
+    Both waits in start-up share one budget, so a slow negotiation cannot buy
+    the connection a second full timeout and leave the viewer hanging twice as
+    long as ``UPSTREAM_TIMEOUT`` promises.
+    """
+    remaining = deadline - asyncio.get_running_loop().time()
+    try:
+        return await asyncio.wait_for(future, max(remaining, 0.0))
+    except TimeoutError as err:
+        raise SignalingError(f"Timed out: {what}") from err
 
 
 def _to_aiortc(ice_servers: list[dict[str, Any]]) -> RTCConfiguration:

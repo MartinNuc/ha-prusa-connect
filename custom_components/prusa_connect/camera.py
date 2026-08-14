@@ -109,6 +109,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
             environment["CAMERA_WEBRTC_CONFIG_URL"],
             self._camera_token,
             self._api.access_token,
+            on_closed=lambda: self._async_forget_session(session_id),
         )
         self._sessions[session_id] = session
 
@@ -145,6 +146,15 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         session = self._sessions.pop(session_id, None)
         if session is not None:
             self.hass.async_create_task(session.close())
+            self._async_update_streaming_state()
+
+    @callback
+    def _async_forget_session(self, session_id: str) -> None:
+        """Drop a session that closed itself, so it stops counting as a viewer.
+
+        The session has already torn itself down; only the bookkeeping is left.
+        """
+        if self._sessions.pop(session_id, None) is not None:
             self._async_update_streaming_state()
 
     @callback

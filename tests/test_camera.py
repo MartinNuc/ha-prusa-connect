@@ -58,11 +58,12 @@ class _Session:
 
     instances: list["_Session"] = []
 
-    def __init__(self, *_args, **_kwargs) -> None:
+    def __init__(self, *_args, on_closed=None, **_kwargs) -> None:  # noqa: ANN001
         self.started_with: str | None = None
         self.closed = False
         self.candidates: list[tuple[str, str | None]] = []
         self.error: Exception | None = None
+        self.on_closed = on_closed
         _Session.instances.append(self)
 
     async def start(self, offer_sdp: str) -> str:
@@ -297,6 +298,33 @@ class TestStreamingState:
         entity.close_webrtc_session("s2")
         assert entity.is_streaming is False
         await asyncio.gather(*entity.hass.tasks)
+
+    @pytest.mark.asyncio
+    async def test_a_session_that_dies_stops_counting_as_a_viewer(self) -> None:
+        """A stream can drop without the viewer ever closing it.
+
+        Leaving it in the table would strand the camera in "streaming" and, far
+        worse, hold its relay allocation until the entity is reloaded.
+        """
+        entity = make_camera()
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+        assert entity.is_streaming is True
+
+        _Session.instances[-1].on_closed()
+
+        assert entity.is_streaming is False
+        assert entity.state_writes == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_a_session_dying_twice_is_harmless(self) -> None:
+        entity = make_camera()
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+
+        _Session.instances[-1].on_closed()
+        _Session.instances[-1].on_closed()
+
+        assert entity.is_streaming is False
+        assert entity.state_writes == [True, False], "no second write"
 
     @pytest.mark.asyncio
     async def test_state_is_written_only_when_it_changes(self) -> None:
