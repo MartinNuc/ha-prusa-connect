@@ -63,9 +63,14 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
             FEATURE_WEBRTC in (camera.get("features") or [])
             and bool(self._camera_token)
         )
-        self._attr_is_streaming = self._supports_webrtc
         if self._supports_webrtc:
             self._attr_supported_features = CameraEntityFeature.STREAM
+
+        # Reflects whether anyone is actually watching, which is what drives the
+        # entity state. Being *able* to stream is `supported_features`; saying
+        # "streaming" while idle would be wrong and makes the state useless for
+        # automations.
+        self._attr_is_streaming = False
 
         self._sessions: dict[str, CameraStreamSession] = {}
         self._environment: dict[str, str] | None = None
@@ -119,6 +124,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
             _LOGGER.exception("Unexpected error starting camera stream")
             raise HomeAssistantError("Could not start the camera stream") from err
 
+        self._async_update_streaming_state()
         send_message(WebRTCAnswer(answer_sdp))
 
     async def async_on_webrtc_candidate(
@@ -139,10 +145,21 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         session = self._sessions.pop(session_id, None)
         if session is not None:
             self.hass.async_create_task(session.close())
+            self._async_update_streaming_state()
+
+    @callback
+    def _async_update_streaming_state(self) -> None:
+        """Publish whether at least one viewer is connected."""
+        streaming = bool(self._sessions)
+        if streaming != self._attr_is_streaming:
+            self._attr_is_streaming = streaming
+            self.async_write_ha_state()
 
     async def async_will_remove_from_hass(self) -> None:
         """Close any sessions still open when the entity goes away."""
         sessions, self._sessions = list(self._sessions.values()), {}
+        # No state write here: the entity is on its way out.
+        self._attr_is_streaming = False
         for session in sessions:
             await session.close()
         await super().async_will_remove_from_hass()

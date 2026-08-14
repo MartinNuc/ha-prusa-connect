@@ -104,6 +104,8 @@ def make_camera(camera: dict = CAMERA, api: _Api | None = None) -> PrusaConnectC
     """Build an entity with its Home Assistant wiring stubbed out."""
     entity = PrusaConnectCamera(object(), api or _Api(), PRINTER_UUID, camera)
     entity.hass = _Hass()
+    entity.async_write_ha_state = lambda: entity.state_writes.append(entity.is_streaming)
+    entity.state_writes = []
     return entity
 
 
@@ -113,7 +115,14 @@ class TestCapabilities:
     def test_streaming_camera_advertises_stream_feature(self) -> None:
         entity = make_camera()
         assert entity.supported_features == CameraEntityFeature.STREAM
-        assert entity.is_streaming is True
+
+    def test_idle_until_someone_watches(self) -> None:
+        """`supported_features` says it can stream; `is_streaming` says it is.
+
+        Reporting "streaming" while nobody is watching makes the state useless
+        for automations and misrepresents what the camera is doing.
+        """
+        assert make_camera().is_streaming is False
 
     def test_camera_without_webrtc_does_not_advertise_streaming(self) -> None:
         """Only some cameras can stream; the rest stay snapshot-only."""
@@ -262,3 +271,58 @@ class TestSessionLifecycle:
 
         assert all(session.closed for session in _Session.instances)
         assert entity._sessions == {}
+
+
+class TestStreamingState:
+    """The entity state must track real viewers, not mere capability."""
+
+    @pytest.mark.asyncio
+    async def test_becomes_streaming_only_once_a_viewer_connects(self) -> None:
+        entity = make_camera()
+        assert entity.is_streaming is False
+
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+        assert entity.is_streaming is True
+        assert entity.state_writes == [True]
+
+    @pytest.mark.asyncio
+    async def test_returns_to_idle_when_the_last_viewer_leaves(self) -> None:
+        entity = make_camera()
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s2", lambda _m: None)
+
+        entity.close_webrtc_session("s1")
+        assert entity.is_streaming is True, "one viewer remains"
+
+        entity.close_webrtc_session("s2")
+        assert entity.is_streaming is False
+        await asyncio.gather(*entity.hass.tasks)
+
+    @pytest.mark.asyncio
+    async def test_state_is_written_only_when_it_changes(self) -> None:
+        """A write per viewer would churn the state machine for no reason."""
+        entity = make_camera()
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s2", lambda _m: None)
+        assert entity.state_writes == [True]
+
+    @pytest.mark.asyncio
+    async def test_failed_session_leaves_the_camera_idle(self) -> None:
+        entity = make_camera()
+        original_init = _Session.__init__
+
+        def failing_init(self, *args, **kwargs) -> None:
+            original_init(self, *args, **kwargs)
+            self.error = SignalingError("camera offline")
+
+        _Session.__init__ = failing_init
+        try:
+            with pytest.raises(HomeAssistantError):
+                await entity.async_handle_async_webrtc_offer(
+                    "v=0\r\n", "s1", lambda _m: None
+                )
+        finally:
+            _Session.__init__ = original_init
+
+        assert entity.is_streaming is False
+        assert entity.state_writes == []
