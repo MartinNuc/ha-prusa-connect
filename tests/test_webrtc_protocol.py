@@ -29,11 +29,13 @@ from custom_components.prusa_connect.webrtc_protocol import (
     MessageType,
     SchemeType,
     TransportProtocol,
+    VideoQuality,
     add_candidate_prefix,
     build_auth,
     build_command,
     build_endpoint,
     build_ice_configuration,
+    build_video_configuration,
     build_webrtc,
     has_turn_server,
     parse_webrtc,
@@ -107,6 +109,37 @@ class TestCommands:
         fields = pb_decode(build_command(CAMERA_TOKEN, CMD_GET_STATUS))
         assert fields[CMD_GET_STATUS] == [1]
         assert fields[11] == [CAMERA_TOKEN.encode()]
+
+
+class TestVideoConfiguration:
+    """The `configuration` message that sets live stream resolution."""
+
+    def test_carries_token_and_nested_quality(self) -> None:
+        fields = pb_decode(
+            build_video_configuration(CAMERA_TOKEN, VideoQuality.FHD)
+        )
+        assert fields[6] == [CAMERA_TOKEN.encode()]
+        assert pb_decode(fields[8][0])[1] == [VideoQuality.FHD]
+
+    def test_quality_is_the_enum_not_a_pixel_count(self) -> None:
+        """FHD is 3, not 1080 — sending the height sets an out-of-range tier."""
+        assert VideoQuality.FHD == 3
+        assert (VideoQuality.SD, VideoQuality.HD) == (1, 2)
+
+    @pytest.mark.parametrize("quality", list(VideoQuality))
+    def test_every_tier_round_trips(self, quality: VideoQuality) -> None:
+        encoded = build_video_configuration(CAMERA_TOKEN, quality)
+        assert pb_decode(pb_decode(encoded)[8][0])[1] == [quality]
+
+    def test_does_not_set_fields_it_was_not_asked_to(self) -> None:
+        """`Configuration` also carries image, timelapse and logs settings.
+
+        The camera applies whatever is present, so an accidental extra field
+        would silently reconfigure hardware in someone else's house.
+        """
+        fields = pb_decode(build_video_configuration(CAMERA_TOKEN, VideoQuality.HD))
+        assert set(fields) == {4, 6, 8}
+        assert fields[4] == [b""], "system must be present but empty"
 
 
 class TestIceServerTrimming:

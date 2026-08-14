@@ -21,16 +21,19 @@ from .webrtc_protocol import (
     CMD_GET_FEATURES,
     CMD_GET_STATUS,
     EVENT_AUTH,
+    EVENT_CONFIGURATION,
     EVENT_FEATURES,
     EVENT_STATUS,
     EVENT_TRIGGER,
     EVENT_WEBRTC,
     MEDIA_MID,
     MessageType,
+    VideoQuality,
     add_candidate_prefix,
     build_auth,
     build_command,
     build_ice_configuration,
+    build_video_configuration,
     build_webrtc,
     parse_webrtc,
     strip_candidate_prefix,
@@ -189,6 +192,21 @@ class PrusaCameraSignaling:
             raise SignalingError(
                 "Camera signalling server did not accept our credentials"
             ) from err
+
+    async def set_video_quality(self, quality: VideoQuality) -> None:
+        """Ask the camera for a stream resolution tier.
+
+        Must be sent before ``request_stream``: the camera encodes at whatever
+        quality was in force when it built its offer, so a later change only
+        takes effect on the next session.
+
+        Fire-and-forget — the camera does not acknowledge this, and a camera
+        that ignores it simply streams at its current quality.
+        """
+        await self._sio.emit(
+            EVENT_CONFIGURATION,
+            build_video_configuration(self._camera_token, quality),
+        )
 
     async def request_stream(
         self, ice_servers: list[dict], policy: str | None, ttl: int

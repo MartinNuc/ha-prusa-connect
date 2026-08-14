@@ -21,12 +21,15 @@ from custom_components.prusa_connect.signaling import (
 )
 from custom_components.prusa_connect.webrtc_protocol import (
     EVENT_AUTH,
+    EVENT_CONFIGURATION,
     EVENT_TRIGGER,
     EVENT_WEBRTC,
     MEDIA_MID,
     MessageType,
+    VideoQuality,
     build_webrtc,
     parse_webrtc,
+    pb_decode,
 )
 
 CAMERA_TOKEN = "CAMERATOKEN000000000"
@@ -207,6 +210,33 @@ class TestStreamRequest:
         await session.connect()
         with pytest.raises(SignalingError, match="no offer"):
             await session.request_stream([], "all", 300)
+
+
+class TestVideoQuality:
+    """Selecting the stream resolution."""
+
+    @pytest.mark.asyncio
+    async def test_sends_the_requested_tier(self, fake_sio) -> None:
+        session, _, _ = make_session()
+        await session.connect()
+        await session.set_video_quality(VideoQuality.FHD)
+
+        payload = fake_sio.events_named(EVENT_CONFIGURATION)[0]
+        assert pb_decode(pb_decode(payload)[8][0])[1] == [VideoQuality.FHD]
+
+    @pytest.mark.asyncio
+    async def test_can_be_sent_before_the_stream_request(self, fake_sio) -> None:
+        """The camera fixes its encoder when it builds the offer.
+
+        Requesting a quality afterwards would apply to the *next* session, so
+        the two must be orderable this way round.
+        """
+        session, _, _ = make_session()
+        await session.connect()
+        await session.set_video_quality(VideoQuality.HD)
+
+        order = [event for event, _ in fake_sio.emitted]
+        assert order.index(EVENT_AUTH) < order.index(EVENT_CONFIGURATION)
 
 
 class TestInboundMessages:

@@ -152,6 +152,33 @@ message Auth {                     // encoder `An`
   string     client_jwt_token = 3;
 }
 
+// Sent on the `configuration` event. The camera applies only the fields that
+// are present, so send nothing you did not mean to change — this same message
+// also rewrites the timelapse interval, the snapshot pipeline and system
+// settings on hardware that is usually in somebody else's house.
+message Configuration {            // encoder `ft`, decoder `Tt`
+  Image     image              = 1;
+  uint32    timelapse_interval = 2;
+  Control   control            = 3;
+  System    system             = 4;
+  Logs      logs               = 5;
+  string    camera_token       = 6;
+  string    request_id         = 7;
+  Video     video              = 8;
+  Timelapse timelapse          = 9;
+}
+
+message Video {                    // encoder `ct`, decoder `lt`
+  VideoQuality quality = 1;
+}
+
+message Image {                    // encoder `ot`, decoder `st`
+  uint32   width    = 1;
+  uint32   height   = 2;
+  uint32   quality  = 3;           // JPEG quality of snapshots, not the stream
+  Rotation rotation = 4;
+}
+
 enum MessageType {
   WEBRTC_MSG_TYPE_UNKNOWN   = 0;
   WEBRTC_MSG_TYPE_REQUEST   = 1;
@@ -168,7 +195,53 @@ enum ClientType        { CLIENT_TYPE_UNKNOWN=0;   CLIENT_TYPE_CAMERA=1; CLIENT_T
 enum SchemeType        { SCHEME_TYPE_UNDEFINED=0; SCHEME_TYPE_STUN=1;   SCHEME_TYPE_TURN=2; }
 enum TransportProtocol { TRANSPORT_PROTOCOL_UNDEFINED=0; ..._UDP=1; ..._TCP=2; ..._TLS=3; }
 enum IceTransportPolicy{ POLICY_UNDEFINED=0;      POLICY_ALL=1;         POLICY_RELAY=2; }
+enum VideoQuality      { VIDEO_QUALITY_INVALID=0;  ..._SD=1;  ..._HD=2;  ..._FHD=3; }
 ```
+
+### Stream resolution — the `configuration` event
+
+The live stream defaults to **640x480** regardless of the camera's 1920x1080
+sensor. `VideoQuality` is what changes it, sent on the `configuration` event
+*before* requesting the stream — the camera fixes its encoder when it builds
+the offer, so a later change only affects the next session:
+
+```python
+Configuration{ camera_token=6, video=8{ quality=1 } }   # 26 bytes for a 20-char token
+```
+
+This is the `configuration` message that appeared in some browser captures and
+not others, and it is why streaming works without it: it only ever *raises* the
+default. Cameras that support it advertise `VideoQuality`.
+
+Send it exactly as the frontend does — `{system: {}, camera_token, video}` —
+including the empty `system` submessage, which every settings call in
+`useCameraWebSocket` includes.
+
+**A relayed connection is capped at SD, and this is enforced Prusa-side.** The
+quality selector in the Connect web app is disabled outright when the peer
+connection is relayed:
+
+```js
+let s = a?.connectionType === `relay`,
+    u = s ? F.VIDEO_QUALITY_SD : e,          // forced to SD
+    title: s ? `Quality switching is disabled for TURN relay connections` : undefined,
+    isDisabled: !n || s
+```
+
+FHD additionally requires camera firmware >= 3.1.1.
+
+Measured against a real camera (firmware 3.1.5, advertising both `VideoQuality`
+and `TurnVideoQualityChange`) over a relayed connection: requesting SD, HD or
+FHD — while idle *and* mid-session — leaves the stream at 640x480, and the
+camera's own `status` keeps reporting `video.quality=SD`. The request is not
+being rejected: the signalling server acks the `configuration` event with the
+same success code it acks authentication with. The camera simply declines.
+
+So the setter is correct and worth sending; whether it does anything depends on
+whether the connection is relayed, which is a property of the two networks
+rather than of this code. `scripts/status_probe.py` reads the camera's reported
+quality over Socket.IO alone (no WebRTC, no TURN allocation), which is the cheap
+way to check; `scripts/quality_probe.py` decodes frames to confirm.
 
 ### `request_id` must be the Socket.IO namespace sid
 
@@ -249,8 +322,27 @@ produce timelapses server-side.** Worth checking before building our own.
 - **Minimum OAuth scope** that still yields `connect_id`. We request what the
   web app requests; `openid connect` alone may well be enough, and asking for
   `email_lists` in a printer integration is hard to justify.
-- **The `configuration` event** (28–30 bytes, client to server) appears in some
-  captures and not others, and streaming works without it. Purpose unknown.
+- **No server-reflexive candidate is gathered, so every path relays.** The
+  config endpoint returns `stun:stun.l.google.com:5349` first, and 5349 is the
+  STUN-over-TLS port — plain STUN there times out. Browsers query every STUN
+  server, but aiortc/aioice use only the **first**, so gathering silently
+  yields host + relay and nothing else. Moving any working STUN URL
+  (`stun1.l.google.com:3478`) to the front makes aiortc gather a `srflx`
+  candidate. That did *not* change the outcome in testing — ICE still nominated
+  the relay pair, and the stream stayed SD — but it is a prerequisite for any
+  direct path, and a direct path is what lifts the SD cap. Worth revisiting for
+  users whose printer is on the same network, where host candidates should win
+  outright.
+
+- **TURN allocation quota.** `coturn.prusa3d.com` answers `ALLOCATE` with
+  **`486 Allocation Quota Reached`** once too many allocations are live, and
+  they linger for coturn's allocation lifetime (~10 minutes) after a client
+  goes away. Repeated connect/disconnect cycles will exhaust it; the symptom is
+  an offer that arrives normally followed by ICE that never leaves
+  `connecting`, with nothing logged above aioice's DEBUG level. Whether the
+  quota is per-account or server-wide is unknown — the TURN username embeds a
+  fresh timestamp each time, so per-username quota should not trigger, which
+  points at a server-wide limit shared with every other Connect user.
 
 ## Reference hardware
 
@@ -381,12 +473,12 @@ A real implementation should hold frames until the first keyframe.
 
 #### Stream resolution is lower than the snapshots
 
-The live stream is **640x480**, while `/snapshots/last` and the camera's
-advertised resolution are 1920x1080. Whether that is fixed, adaptive, or
-selectable is unknown — the camera does advertise `VideoQuality` and
-`TurnVideoQualityChange`, and the unexplained `configuration` message the web
-app sometimes sends is a plausible way it gets set. Worth investigating before
-promising HomeKit users a 1080p feed.
+The live stream is **640x480** by default, while `/snapshots/last` and the
+camera's advertised resolution are 1920x1080. It is selectable: see
+[the `configuration` event](#stream-resolution--the-configuration-event).
+Raising it interacts badly with `MediaRelay`, which re-encodes per viewer —
+that already halves the frame rate at 640x480, so 1080p needs the passthrough
+path rather than the relay.
 
 Whichever is chosen, sessions should be held only while somebody is watching:
 the web app tears its own down when the tab is hidden, and the stream is

@@ -63,6 +63,20 @@ class IceTransportPolicy(IntEnum):
     RELAY = 2
 
 
+class VideoQuality(IntEnum):
+    """``Video.quality`` — the live stream's resolution tier.
+
+    Distinct from the camera's snapshot resolution, which stays 1920x1080
+    whatever this is set to. Cameras come up in SD, so a 1080p stream has to be
+    asked for explicitly.
+    """
+
+    INVALID = 0
+    SD = 1
+    HD = 2
+    FHD = 3
+
+
 # ``Auth.client_type`` is the literal string "client" while
 # ``WebRtcMessage.client_type`` is the ClientType enum. Same concept, two
 # encodings — sending the string where the enum belongs makes the server report
@@ -78,6 +92,11 @@ EVENT_TRIGGER: Final = "trigger"
 EVENT_WEBRTC: Final = "webrtc"
 EVENT_STATUS: Final = "status"
 EVENT_FEATURES: Final = "features"
+EVENT_CONFIGURATION: Final = "configuration"
+
+# Cameras that let the stream quality be changed advertise this. Without it,
+# sending a Configuration is at best ignored.
+FEATURE_VIDEO_QUALITY: Final = "VideoQuality"
 
 # Command field numbers. Only the read-only queries are exposed: the same
 # message also carries start_fw_update (8), start_device_reboot (9) and
@@ -209,6 +228,24 @@ def build_command(camera_token: str, field: int) -> bytes:
     Field order matches the frontend's encoder.
     """
     return pb_uint(field, 1) + pb_bytes(11, camera_token)
+
+
+def build_video_configuration(camera_token: str, quality: VideoQuality) -> bytes:
+    """``Configuration{ camera_token=6, video=8 }`` with ``Video{ quality=1 }``.
+
+    The setter for live stream resolution. `Configuration` also carries image
+    (1), timelapse_interval (2), control (3) and logs (5); those are left out,
+    since the camera applies whatever fields are present.
+
+    The empty `system` submessage is not: every settings call in the Connect
+    frontend sends `{system: {}, camera_token, ...}`, so it is reproduced here
+    rather than assumed to be incidental.
+    """
+    return (
+        pb_message(4, b"")
+        + pb_bytes(6, camera_token)
+        + pb_message(8, pb_uint(1, quality))
+    )
 
 
 def build_endpoint(url: str) -> bytes:
