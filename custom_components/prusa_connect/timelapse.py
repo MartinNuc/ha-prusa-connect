@@ -115,6 +115,15 @@ class TimelapseRecorder:
     @callback
     def async_start(self) -> None:
         """Begin following printer state."""
+        # The media directory is resolved from Home Assistant's own config and
+        # differs between installation types, so say where videos will actually
+        # land rather than leaving the user to guess.
+        _LOGGER.info(
+            "Timelapse recording enabled for %d printer(s); videos will be "
+            "written to %s",
+            len(self._cameras),
+            Path(_media_root(self.hass)) / TIMELAPSE_MEDIA_DIR,
+        )
         self._cancel_listener = self._coordinator.async_add_listener(
             self._handle_coordinator_update
         )

@@ -200,7 +200,7 @@
           "timelapse": "Record a timelapse of each print"
         },
         "data_description": {
-          "timelapse": "Saves a snapshot every 30 seconds while printing and builds a video in your media library when the print ends. Uses a few hundred megabytes of disk during a long print."
+          "timelapse": "Saves a snapshot every 30 seconds while printing, then builds a video when the print ends. Videos appear in Media → prusa_connect (/media/prusa_connect), named after the print, for example 20260815-143000_Benchy.gcode.mp4. Frames are held in .prusa_connect_timelapse while the print runs and use a few hundred megabytes; they are deleted once the video is made."
         }
       }
     }
