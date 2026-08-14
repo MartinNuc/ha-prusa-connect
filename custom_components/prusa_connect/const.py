@@ -43,6 +43,29 @@ DEFAULT_SCAN_INTERVAL: Final = 30  # seconds
 FAST_SCAN_INTERVAL: Final = 5  # seconds
 FAST_SCAN_DURATION: Final = 30  # seconds
 
+# Timelapse. Recording writes hundreds of megabytes to disk over a long print,
+# so it stays off until asked for.
+CONF_TIMELAPSE: Final = "timelapse"
+DEFAULT_TIMELAPSE: Final = False
+
+# The camera uploads a fresh snapshot every 30 seconds under the common
+# THIRTY_SEC trigger scheme. Sampling faster only re-fetches the same JPEG
+# unless the camera is poked with a `get_snapshot` trigger, which costs upload
+# bandwidth wherever the printer lives — so match its own cadence.
+TIMELAPSE_INTERVAL: Final = 30  # seconds
+
+# 10 fps turns a 5-hour print into a minute of video.
+TIMELAPSE_FPS: Final = 10
+
+# ~24 hours at the sampling interval above. A guard against a print that never
+# reports finishing quietly filling the disk, not a real limit.
+TIMELAPSE_MAX_FRAMES: Final = 2880
+
+# Videos land in the media library; frames are transient and stay out of it, so
+# browsing media never shows thousands of JPEGs.
+TIMELAPSE_MEDIA_DIR: Final = "prusa_connect"
+TIMELAPSE_WORK_DIR: Final = ".prusa_connect_timelapse"
+
 MANUFACTURER: Final = "Prusa Research"
 CONFIGURATION_URL: Final = "https://connect.prusa3d.com"
 

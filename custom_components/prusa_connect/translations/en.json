@@ -45,45 +45,105 @@
     }
   },
   "exceptions": {
-    "no_device": { "message": "No device specified in service call." },
-    "device_not_found": { "message": "Device not found." },
-    "not_prusa_device": { "message": "Device is not a Prusa Connect printer." },
-    "entry_not_found": { "message": "Configuration entry not found for device." }
+    "no_device": {
+      "message": "No device specified in service call."
+    },
+    "device_not_found": {
+      "message": "Device not found."
+    },
+    "not_prusa_device": {
+      "message": "Device is not a Prusa Connect printer."
+    },
+    "entry_not_found": {
+      "message": "Configuration entry not found for device."
+    }
   },
   "entity": {
     "sensor": {
-      "state": { "name": "State" },
-      "nozzle_temperature": { "name": "Nozzle Temperature" },
-      "nozzle_target_temperature": { "name": "Nozzle Target" },
-      "bed_temperature": { "name": "Bed Temperature" },
-      "bed_target_temperature": { "name": "Bed Target" },
-      "print_speed": { "name": "Print Speed" },
-      "flow_factor": { "name": "Flow Factor" },
-      "z_height": { "name": "Z Height" },
-      "print_progress": { "name": "Print Progress" },
-      "current_job": { "name": "Current Job" },
-      "job_state": { "name": "Job State" },
-      "time_remaining": { "name": "Time Remaining" },
-      "time_elapsed": { "name": "Time Elapsed" },
-      "material": { "name": "Material" },
-      "firmware_version": { "name": "Firmware" },
-      "serial_number": { "name": "Serial Number" }
+      "state": {
+        "name": "State"
+      },
+      "nozzle_temperature": {
+        "name": "Nozzle Temperature"
+      },
+      "nozzle_target_temperature": {
+        "name": "Nozzle Target"
+      },
+      "bed_temperature": {
+        "name": "Bed Temperature"
+      },
+      "bed_target_temperature": {
+        "name": "Bed Target"
+      },
+      "print_speed": {
+        "name": "Print Speed"
+      },
+      "flow_factor": {
+        "name": "Flow Factor"
+      },
+      "z_height": {
+        "name": "Z Height"
+      },
+      "print_progress": {
+        "name": "Print Progress"
+      },
+      "current_job": {
+        "name": "Current Job"
+      },
+      "job_state": {
+        "name": "Job State"
+      },
+      "time_remaining": {
+        "name": "Time Remaining"
+      },
+      "time_elapsed": {
+        "name": "Time Elapsed"
+      },
+      "material": {
+        "name": "Material"
+      },
+      "firmware_version": {
+        "name": "Firmware"
+      },
+      "serial_number": {
+        "name": "Serial Number"
+      }
     },
     "binary_sensor": {
-      "online": { "name": "Online" },
-      "printing": { "name": "Printing" },
-      "attention_required": { "name": "Attention Required" },
-      "enclosure": { "name": "Enclosure" }
+      "online": {
+        "name": "Online"
+      },
+      "printing": {
+        "name": "Printing"
+      },
+      "attention_required": {
+        "name": "Attention Required"
+      },
+      "enclosure": {
+        "name": "Enclosure"
+      }
     },
     "button": {
-      "pause_print": { "name": "Pause Print" },
-      "resume_print": { "name": "Resume Print" },
-      "stop_print": { "name": "Stop Print" },
-      "set_ready": { "name": "Set Ready" },
-      "cancel_ready": { "name": "Cancel Ready" }
+      "pause_print": {
+        "name": "Pause Print"
+      },
+      "resume_print": {
+        "name": "Resume Print"
+      },
+      "stop_print": {
+        "name": "Stop Print"
+      },
+      "set_ready": {
+        "name": "Set Ready"
+      },
+      "cancel_ready": {
+        "name": "Cancel Ready"
+      }
     },
     "image": {
-      "print_preview": { "name": "Print Preview" }
+      "print_preview": {
+        "name": "Print Preview"
+      }
     }
   },
   "services": {
@@ -128,6 +188,19 @@
         "button": {
           "name": "Button",
           "description": "The button to press in the dialog."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Prusa Connect options",
+        "data": {
+          "timelapse": "Record a timelapse of each print"
+        },
+        "data_description": {
+          "timelapse": "Saves a snapshot every 30 seconds while printing and builds a video in your media library when the print ends. Uses a few hundred megabytes of disk during a long print."
         }
       }
     }

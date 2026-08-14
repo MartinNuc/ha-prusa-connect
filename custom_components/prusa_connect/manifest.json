@@ -10,5 +10,8 @@
     "python-socketio[asyncio_client]==5.13.0",
     "aiortc==1.15.0"
   ],
-  "version": "0.2.0"
+  "version": "0.2.0",
+  "dependencies": [
+    "ffmpeg"
+  ]
 }

@@ -155,11 +155,29 @@ def _install_homeassistant_stubs() -> None:
     aiohttp_client = _module("homeassistant.helpers.aiohttp_client")
     aiohttp_client.async_get_clientsession = lambda hass: None
 
+    event = _module("homeassistant.helpers.event")
+
+    def _track_time_interval(hass, action, interval, **kwargs):
+        """Record the callback and hand back a canceller.
+
+        Tests drive capture explicitly; what matters here is that the recorder
+        registers and cancels the timer, not that real time passes.
+        """
+        return lambda: None
+
+    event.async_track_time_interval = _track_time_interval
+
+    util = _module("homeassistant.util")
+    dt_util = _module("homeassistant.util.dt")
+    dt_util.now = lambda: __import__("datetime").datetime(2026, 8, 14, 20, 30, 0)
+    util.dt = dt_util
+
     helpers.update_coordinator = update_coordinator
     helpers.device_registry = device_registry
     helpers.entity_platform = entity_platform
     helpers.typing = typing_mod
     helpers.aiohttp_client = aiohttp_client
+    helpers.event = event
 
     _module("homeassistant.components")
 
