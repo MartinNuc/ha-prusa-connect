@@ -299,6 +299,24 @@ transcoding — which is also the codec HomeKit expects.
   and note that `turns:` implies `TRANSPORT_PROTOCOL_TLS`.
 - The SDP blob travels in `sdp.candidate`, the same field used for ICE
   candidate strings. Disambiguate on `message_type`.
+- **A track object is not a connection.** aiortc fires `track` as soon as the
+  camera's offer is applied, seconds before ICE completes. Treating that as
+  success answers the viewer with a stream that may never carry a frame — and
+  since nothing raised, nothing tears the session down. Wait for
+  `connectionState == "connected"`.
+- **Leaked sessions poison the relay.** Every session holds a TURN allocation
+  for 600 s. Sessions that fail silently keep theirs, and a few retries — which
+  is what a user watching a spinner does — are enough for `coturn.prusa3d.com`
+  to answer **486 Allocation Quota Reached**, after which *nothing* connects
+  until they expire. The symptom is a normal offer followed by ICE stuck in
+  `checking`, indistinguishable from a signalling bug. Surface it by
+  monkeypatching `aioice.stun.parse_message` to log `ERROR-CODE`; a `401` first
+  is normal (the long-term-credential nonce challenge), `486` is the real one.
+- **Two different TURN servers are in play.** Connect hands us a GCP relay
+  (`34.159.146.76`); the camera uses Prusa's own (`185.87.61.1`). The pair that
+  actually succeeds is relay↔relay, so failing to allocate *our* relay is fatal
+  rather than merely unlucky — check for `typ relay` in our local SDP before
+  blaming anything else.
 
 Any server-side `Unimplemented type: N` means *our encoding is malformed*, and
 N is the wire type it choked on — a fast way to localise the bad field.
