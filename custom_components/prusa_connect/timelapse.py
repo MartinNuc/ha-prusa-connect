@@ -60,6 +60,10 @@ FINISHED_STATES = frozenset(
     }
 )
 
+# Consecutive failed captures before saying so out loud. Three misses is 90
+# seconds of a print going unrecorded — past the point of bad luck.
+CAPTURE_MISS_LIMIT = 3
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -85,6 +89,7 @@ class TimelapseSession:
     frame_dir: Path
     job_name: str | None = None
     frames: int = 0
+    misses: int = 0
     digests: set[str] = field(default_factory=set)
 
     @property
@@ -200,6 +205,27 @@ class TimelapseRecorder:
         self._async_start_timer()
 
     @callback
+    def _async_frame_missed(self, session: TimelapseSession, reason: str) -> None:
+        """Note a frame we could not fetch, and complain if they keep failing.
+
+        A single miss is unremarkable. A run of them means the recording is
+        quietly producing nothing, which is exactly what happened once before:
+        every failure was logged at debug level, so a print that captured one
+        frame and then stopped left no trace of why.
+        """
+        session.misses += 1
+        if session.misses == CAPTURE_MISS_LIMIT:
+            _LOGGER.warning(
+                "Timelapse of %s has missed %d frames in a row (%s). Recording "
+                "continues, but the video will have a gap",
+                session.label,
+                session.misses,
+                reason,
+            )
+        else:
+            _LOGGER.debug("Timelapse frame fetch failed: %s", reason)
+
+    @callback
     def _async_job_name(self, printer_uuid: str) -> str | None:
         """The name of the file this printer is currently printing."""
         if self._job_coordinator is None:
@@ -262,11 +288,14 @@ class TimelapseRecorder:
         try:
             image = await self._api.get_camera_snapshot(session.camera_id)
         except Exception as err:  # noqa: BLE001 - one bad frame must not end the print's recording
-            _LOGGER.debug("Timelapse frame fetch failed: %s", err)
+            self._async_frame_missed(session, str(err))
             return
 
         if not image:
+            self._async_frame_missed(session, "the camera returned no image")
             return
+
+        session.misses = 0
 
         # The camera refreshes on its own schedule, so consecutive polls often
         # return the identical JPEG. Storing those would stretch the video with

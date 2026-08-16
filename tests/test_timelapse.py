@@ -8,6 +8,7 @@ encode is unrecoverable; equally, a session that never ends fills the disk.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -378,6 +379,48 @@ class TestNaming:
         await recorder._async_capture_all()
 
         assert recorder._sessions[PRINTER].label == "Core One"
+
+
+class TestMissedFrames:
+    """A recording that quietly stops producing frames must say so."""
+
+    @pytest.mark.asyncio
+    async def test_repeated_failures_are_reported(self, setup, caplog) -> None:
+        """Every miss was logged at debug, so a dead recording left no trace."""
+        recorder, hass, coordinator = setup(api=_Api([None, None, None, None]))
+        coordinator.set_state(PrinterState.PRINTING)
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(4):
+                await recorder._async_capture_all()
+
+        assert "missed 3 frames in a row" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_one_bad_frame_stays_quiet(self, setup, caplog) -> None:
+        recorder, hass, coordinator = setup(api=_Api([b"a", None, b"b"]))
+        coordinator.set_state(PrinterState.PRINTING)
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                await recorder._async_capture_all()
+
+        assert "missed" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_run_resets_when_a_frame_arrives(self, setup, caplog) -> None:
+        """Only a *consecutive* run means the recording has stopped working."""
+        recorder, hass, coordinator = setup(
+            api=_Api([None, None, b"a", None, None, b"b"])
+        )
+        coordinator.set_state(PrinterState.PRINTING)
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(6):
+                await recorder._async_capture_all()
+
+        assert "missed" not in caplog.text
+        assert recorder._sessions[PRINTER].frames == 2
 
 
 class TestOutput:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -39,6 +39,9 @@ class PrusaConnectData:
     printer_coordinator: PrusaConnectPrinterCoordinator
     job_coordinator: PrusaConnectJobCoordinator
     timelapse: TimelapseRecorder | None = None
+    # The options this entry was set up with, so an update listener can tell an
+    # options change from a token being written back to the same entry.
+    options: dict = field(default_factory=dict)
 
 
 type PrusaConnectConfigEntry = ConfigEntry[PrusaConnectData]
@@ -78,6 +81,7 @@ async def async_setup_entry(
         api=api,
         printer_coordinator=printer_coordinator,
         job_coordinator=job_coordinator,
+        options=dict(entry.options),
     )
 
     if entry.options.get(CONF_TIMELAPSE, DEFAULT_TIMELAPSE):
@@ -132,7 +136,18 @@ async def _async_setup_timelapse(
 async def _async_options_updated(
     hass: HomeAssistant, entry: PrusaConnectConfigEntry
 ) -> None:
-    """Apply an options change by reloading."""
+    """Apply an options change by reloading — and only an options change.
+
+    This listener fires on *any* update to the config entry, and the access
+    token is written back to that same entry every time it is refreshed. So
+    reloading unconditionally restarted the whole integration on a schedule set
+    by token expiry: observed at almost exactly two-hour intervals, each one
+    ending the timelapse recording in progress and starting a fresh one. A
+    seven-hour print came out as a 12-second video and some fragments.
+    """
+    data = getattr(entry, "runtime_data", None)
+    if data is not None and data.options == dict(entry.options):
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
