@@ -123,6 +123,8 @@ def _install_homeassistant_stubs() -> None:
         "ConfigFlow", (), {"__init_subclass__": classmethod(lambda cls, **kw: None)}
     )
     config_entries.ConfigFlowResult = dict
+    config_entries.OptionsFlow = type("OptionsFlow", (), {})
+    config_entries.OptionsFlowWithReload = type("OptionsFlowWithReload", (), {})
 
     data_entry_flow = _module("homeassistant.data_entry_flow")
     data_entry_flow.AbortFlow = type("AbortFlow", (Exception,), {})

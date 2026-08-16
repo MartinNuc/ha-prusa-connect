@@ -83,11 +83,19 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
         """Return (user_id, label) for the signed-in account.
 
         Connect exposes no user endpoint, so identity comes from the id_token.
+
+        The label becomes the config entry's title, which Home Assistant reuses
+        verbatim where nothing else identifies us: the reauthentication repair
+        reads "Authentication expired for {title}" and is filed under Home
+        Assistant Core, not this integration. A bare email address leaves the
+        user guessing which of their accounts expired, so the title carries the
+        brand as well.
         """
         claims = decode_id_token(tokens["id_token"])
         user = claims.get("user") or {}
         user_id = str(user.get("id") or claims.get("sub") or "")
-        label = user.get("email") or self._email or "Prusa Connect"
+        account = user.get("email") or self._email
+        label = f"Prusa Connect ({account})" if account else "Prusa Connect"
         return user_id, label
 
     async def async_step_user(
