@@ -9,7 +9,10 @@ from __future__ import annotations
 import pytest
 
 from custom_components.prusa_connect.const import PrinterState
-from custom_components.prusa_connect.sensor import SENSOR_DESCRIPTIONS
+from custom_components.prusa_connect.sensor import (
+    SENSOR_DESCRIPTIONS,
+    _hours_minutes,
+)
 
 
 def _values(printer: dict, job: dict | None) -> dict:
@@ -47,6 +50,48 @@ def test_sensor_values(printer, job, key, expected):
 def test_current_job_uses_display_name(printer, job):
     """The job name comes from the file's display name."""
     assert _values(printer, job)["current_job"] == job["file"]["display_name"]
+
+
+class TestReadableDurations:
+    """h:mm alongside the seconds, which stay for graphs and automations."""
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (0, "0:00"),
+            (59, "0:00"),
+            (60, "0:01"),
+            (3600, "1:00"),
+            (23813, "6:36"),
+            (7020, "1:57"),
+        ],
+    )
+    def test_formats_as_hours_and_minutes(self, seconds, expected):
+        assert _hours_minutes(seconds) == expected
+
+    def test_hours_are_not_wrapped_at_a_day(self):
+        """Reading "3:30" for a two-day print would be worse than seconds."""
+        assert _hours_minutes(2 * 86400 + 3 * 3600 + 30 * 60) == "51:30"
+
+    @pytest.mark.parametrize("value", [None, "", "abc"])
+    def test_unusable_values_give_nothing(self, value):
+        assert _hours_minutes(value) is None
+
+    def test_negative_is_clamped(self):
+        """A stale estimate must not render as -1:00."""
+        assert _hours_minutes(-3600) == "0:00"
+
+    def test_reads_the_same_source_as_the_numeric_sensor(self, printer, job):
+        values = _values(printer, job)
+        assert values["time_elapsed"] == 1561
+        assert values["time_elapsed_hm"] == "0:26"
+
+    def test_the_numeric_sensors_survive(self, printer, job):
+        """They feed history and statistics; the h:mm ones are additional."""
+        values = _values(printer, job)
+        for key in ("time_elapsed", "time_remaining"):
+            assert key in values, f"{key} disappeared"
+            assert f"{key}_hm" in values
 
 
 def test_no_sensor_silently_returns_none(printer, job):

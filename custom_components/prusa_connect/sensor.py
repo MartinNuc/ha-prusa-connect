@@ -138,6 +138,22 @@ def _progress(printer: dict, job: dict | None) -> StateType | None:
     return round(min(elapsed / estimate * 100, 100.0), 1)
 
 
+def _hours_minutes(seconds: StateType | None) -> str | None:
+    """Render a number of seconds as h:mm.
+
+    Hours are not wrapped at 24: a two-day print reading "3:30" would be
+    actively misleading, so it reads "51:30".
+    """
+    if seconds is None:
+        return None
+    try:
+        total = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        return None
+    hours, remainder = divmod(total, 3600)
+    return f"{hours}:{remainder // 60:02d}"
+
+
 def _job_name(printer: dict, job: dict | None) -> StateType | None:
     """Human-readable name of the current job's file."""
     if not job:
@@ -258,6 +274,22 @@ SENSOR_DESCRIPTIONS: tuple[PrusaConnectSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         icon="mdi:timer",
         value_fn=_elapsed,
+    ),
+    # Seconds are what the API reports, and what graphs, statistics and
+    # automation thresholds want. "23813 s" is not a print time anyone can read
+    # at a glance, though, so these two say the same thing in h:mm — alongside
+    # the numeric sensors rather than replacing them.
+    PrusaConnectSensorEntityDescription(
+        key="time_remaining_hm",
+        translation_key="time_remaining_hm",
+        icon="mdi:timer-sand",
+        value_fn=lambda p, j: _hours_minutes(_remaining(p, j)),
+    ),
+    PrusaConnectSensorEntityDescription(
+        key="time_elapsed_hm",
+        translation_key="time_elapsed_hm",
+        icon="mdi:timer",
+        value_fn=lambda p, j: _hours_minutes(_elapsed(p, j)),
     ),
     PrusaConnectSensorEntityDescription(
         key="material",

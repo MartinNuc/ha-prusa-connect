@@ -99,6 +99,12 @@
       "time_elapsed": {
         "name": "Time Elapsed"
       },
+      "time_remaining_hm": {
+        "name": "Time Remaining (h:mm)"
+      },
+      "time_elapsed_hm": {
+        "name": "Time Elapsed (h:mm)"
+      },
       "material": {
         "name": "Material"
       },
