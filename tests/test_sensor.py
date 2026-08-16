@@ -54,6 +54,45 @@ def test_current_job_uses_display_name(printer, job):
     assert _values(printer, job)["current_job"] == job["file"]["display_name"]
 
 
+class TestOfflinePrinter:
+    """`printer_state` does not notice a printer going away; `connect_state` does."""
+
+    def test_state_reports_offline(self, printer):
+        """The observed case: unplugged overnight, still reading FINISHED."""
+        gone = {**printer, "printer_state": "FINISHED", "connect_state": "OFFLINE"}
+        assert _values(gone, None)["state"] == "OFFLINE"
+
+    def test_a_stale_print_state_does_not_win(self, printer):
+        gone = {**printer, "printer_state": "PRINTING", "connect_state": "OFFLINE"}
+        assert _values(gone, None)["state"] == "OFFLINE"
+
+    def test_an_online_printer_is_untouched(self, printer):
+        live = {**printer, "printer_state": "PRINTING", "connect_state": "PRINTING"}
+        assert _values(live, None)["state"] == "PRINTING"
+
+    def test_a_missing_connect_state_does_not_mean_offline(self, printer):
+        """Absence is not evidence — only the literal OFFLINE counts."""
+        without = {k: v for k, v in printer.items() if k != "connect_state"}
+        assert _values(without, None)["state"] == "IDLE"
+
+    def test_the_captured_payload_really_carries_it(self, printer):
+        """Guards the premise: this fix is worthless if the field is not there."""
+        assert printer["connect_state"] == "IDLE"
+
+    def test_the_state_sensor_stays_available_when_offline(self, printer):
+        """It is the one entity whose job is to announce the printer is gone."""
+        state = next(d for d in SENSOR_DESCRIPTIONS if d.key == "state")
+        gone = {**printer, "connect_state": "OFFLINE"}
+        assert state.offline_fn(gone) is True
+
+    def test_other_sensors_do_not_stay_available_when_offline(self, printer):
+        """A temperature from an unreachable printer is a stale reading."""
+        gone = {**printer, "connect_state": "OFFLINE"}
+        for key in ("nozzle_temperature", "bed_temperature", "print_progress"):
+            description = next(d for d in SENSOR_DESCRIPTIONS if d.key == key)
+            assert description.offline_fn(gone) is False, key
+
+
 class TestElapsedWithoutReportedTime:
     """Connect does not always report how long a print has been running.
 

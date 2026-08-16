@@ -137,10 +137,20 @@ def _install_homeassistant_stubs() -> None:
         (_Subscriptable,),
         {"__init__": lambda self, *a, **k: None},
     )
+    def _coordinator_init(self, coordinator=None, *_args, **_kwargs) -> None:  # noqa: ANN001
+        # Keep the coordinator: entities now derive availability from it, so a
+        # stub that dropped it would make every availability test vacuous.
+        self.coordinator = coordinator
+
     update_coordinator.CoordinatorEntity = type(
         "CoordinatorEntity",
         (_Subscriptable,),
-        {"__init__": lambda self, *a, **k: None, "available": True},
+        {
+            "__init__": _coordinator_init,
+            "available": property(
+                lambda self: getattr(self.coordinator, "last_update_success", True)
+            ),
+        },
     )
     update_coordinator.UpdateFailed = type("UpdateFailed", (Exception,), {})
 

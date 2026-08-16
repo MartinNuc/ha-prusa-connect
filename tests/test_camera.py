@@ -101,9 +101,29 @@ def _fresh_sessions(monkeypatch: pytest.MonkeyPatch):
     return _Session
 
 
-def make_camera(camera: dict = CAMERA, api: _Api | None = None) -> PrusaConnectCamera:
+class _Coordinator:
+    """A printer coordinator holding one online printer."""
+
+    def __init__(self, connect_state: str = "PRINTING") -> None:
+        self.last_update_success = True
+        self.data = {
+            PRINTER_UUID: {
+                "name": "Core One",
+                "printer_state": "PRINTING",
+                "connect_state": connect_state,
+            }
+        }
+
+
+def make_camera(
+    camera: dict = CAMERA,
+    api: _Api | None = None,
+    coordinator: _Coordinator | None = None,
+) -> PrusaConnectCamera:
     """Build an entity with its Home Assistant wiring stubbed out."""
-    entity = PrusaConnectCamera(object(), api or _Api(), PRINTER_UUID, camera)
+    entity = PrusaConnectCamera(
+        coordinator or _Coordinator(), api or _Api(), PRINTER_UUID, camera
+    )
     entity.hass = _Hass()
     entity.async_write_ha_state = lambda: entity.state_writes.append(entity.is_streaming)
     entity.state_writes = []
@@ -138,6 +158,68 @@ class TestCapabilities:
 
     def test_unique_id_is_stable(self) -> None:
         assert make_camera().unique_id == f"{PRINTER_UUID}_camera_588016"
+
+
+class TestAvailability:
+    """A camera that cannot take a picture must not look ready.
+
+    The camera is its own device on its own wifi. It was dead for days —
+    Connect answering 404 to every snapshot, signalling ignored — while this
+    entity reported "idle", which reads as ready to use.
+    """
+
+    @pytest.mark.asyncio
+    async def test_available_while_snapshots_work(self) -> None:
+        entity = make_camera()
+        await entity.async_camera_image()
+        assert entity.available is True
+
+    @pytest.mark.asyncio
+    async def test_one_miss_is_not_enough(self) -> None:
+        """The camera uploads every 30s, so a single miss can be timing."""
+        entity = make_camera(api=_Api(snapshot=None))
+        await entity.async_camera_image()
+        assert entity.available is True
+
+    @pytest.mark.asyncio
+    async def test_repeated_misses_mark_it_unavailable(self) -> None:
+        entity = make_camera(api=_Api(snapshot=None))
+        for _ in range(3):
+            await entity.async_camera_image()
+        assert entity.available is False
+
+    @pytest.mark.asyncio
+    async def test_it_recovers_when_the_camera_returns(self) -> None:
+        api = _Api(snapshot=None)
+        entity = make_camera(api=api)
+        for _ in range(3):
+            await entity.async_camera_image()
+        assert entity.available is False
+
+        api._snapshot = b"jpeg"
+        await entity.async_camera_image()
+        assert entity.available is True
+
+    @pytest.mark.asyncio
+    async def test_an_offline_printer_takes_its_camera_with_it(self) -> None:
+        """Connect reports the link separately from the print state."""
+        entity = make_camera(coordinator=_Coordinator(connect_state="OFFLINE"))
+        await entity.async_camera_image()
+        assert entity.available is False
+
+    @pytest.mark.asyncio
+    async def test_the_run_must_be_consecutive(self) -> None:
+        api = _Api(snapshot=None)
+        entity = make_camera(api=api)
+        await entity.async_camera_image()
+        await entity.async_camera_image()
+
+        api._snapshot = b"jpeg"
+        await entity.async_camera_image()
+        api._snapshot = None
+        await entity.async_camera_image()
+
+        assert entity.available is True, "the run was broken by a good frame"
 
 
 class TestSnapshots:

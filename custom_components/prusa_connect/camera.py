@@ -30,6 +30,11 @@ _LOGGER = logging.getLogger(__name__)
 # scheme uploads every 30 seconds, so polling faster gains nothing.
 FRAME_INTERVAL = 30.0
 
+# Consecutive snapshot failures before the camera is called unavailable. The
+# camera uploads on its own thirty-second schedule, so a single miss can just be
+# bad timing; three in a row is the camera, not the timing.
+SNAPSHOT_FAILURES_BEFORE_UNAVAILABLE = 3
+
 # Cameras advertise their capabilities; only some can stream.
 FEATURE_WEBRTC = "WebRtc"
 
@@ -74,12 +79,47 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
 
         self._sessions: dict[str, CameraStreamSession] = {}
         self._environment: dict[str, str] | None = None
+        self._snapshot_failures = 0
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
         """Return the most recent snapshot as bytes."""
-        return await self._api.get_camera_snapshot(self._camera_id)
+        image = await self._api.get_camera_snapshot(self._camera_id)
+        self._async_note_snapshot(image is not None)
+        return image
+
+    @callback
+    def _async_note_snapshot(self, ok: bool) -> None:
+        """Track whether the camera is still producing pictures.
+
+        The camera is its own device on its own wifi, so it can be dead while
+        the printer prints happily — that is exactly what happened: Connect
+        answered 404 for every snapshot and ignored signalling for days, while
+        this entity sat there reporting "idle" as though it were ready to use.
+        """
+        if ok:
+            if self._snapshot_failures >= SNAPSHOT_FAILURES_BEFORE_UNAVAILABLE:
+                _LOGGER.info("Camera %s is responding again", self._attr_name)
+            self._snapshot_failures = 0
+            return
+
+        self._snapshot_failures += 1
+        if self._snapshot_failures == SNAPSHOT_FAILURES_BEFORE_UNAVAILABLE:
+            _LOGGER.warning(
+                "Camera %s has failed %d snapshots in a row; marking it "
+                "unavailable. It usually needs a power cycle — the reboot "
+                "command travels over the signalling channel, which is down too",
+                self._attr_name,
+                self._snapshot_failures,
+            )
+
+    @property
+    def available(self) -> bool:
+        """Available only while the camera itself is answering."""
+        if self._snapshot_failures >= SNAPSHOT_FAILURES_BEFORE_UNAVAILABLE:
+            return False
+        return super().available
 
     async def _async_environment(self) -> dict[str, str]:
         """Connect's runtime configuration, read once per entity."""

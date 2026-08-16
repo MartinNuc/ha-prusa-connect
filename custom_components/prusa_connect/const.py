@@ -45,6 +45,11 @@ FAST_SCAN_DURATION: Final = 30  # seconds
 
 # Timelapse. Recording writes hundreds of megabytes to disk over a long print,
 # so it stays off until asked for.
+# Connect's own view of the link to the printer, which is not the same thing as
+# the print state: a printer that vanishes mid-job keeps reporting the state it
+# was last in.
+CONNECT_STATE_OFFLINE: Final = "OFFLINE"
+
 CONF_TIMELAPSE: Final = "timelapse"
 DEFAULT_TIMELAPSE: Final = False
 

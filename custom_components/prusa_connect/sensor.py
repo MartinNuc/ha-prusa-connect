@@ -25,7 +25,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.util import dt as dt_util
 
-from .const import PrinterState
+from .const import CONNECT_STATE_OFFLINE, PrinterState
 from .coordinator import (
     ACTIVE_JOB_STATES,
     PrusaConnectJobCoordinator,
@@ -44,6 +44,8 @@ class PrusaConnectSensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[dict, dict | None], StateType | datetime | None]
     available_fn: Callable[[dict], bool] = lambda data: True
     exists_fn: Callable[[dict], bool] = lambda data: True
+    # Whether this sensor stays available while the printer is unreachable.
+    offline_fn: Callable[[dict], bool] = lambda data: False
 
 
 _PRINTER_STATES = {s.value for s in PrinterState}
@@ -51,7 +53,17 @@ _OFFLINE = "OFFLINE"
 
 
 def _state(printer: dict) -> str | None:
-    """Return the printer state, normalising unknown values."""
+    """Return the printer state, normalising unknown values.
+
+    ``connect_state`` wins when it says OFFLINE. ``printer_state`` is the last
+    print state Connect saw and does not change when the printer disappears, so
+    a printer that dropped off the network mid-evening still reported FINISHED
+    the following morning — and the integration showed it as though nothing
+    were wrong.
+    """
+    if printer.get("connect_state") == CONNECT_STATE_OFFLINE:
+        return PrinterState.OFFLINE.value
+
     value = printer.get("printer_state") or printer.get("state")
     if value is None:
         return None
@@ -194,6 +206,10 @@ SENSOR_DESCRIPTIONS: tuple[PrusaConnectSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=[s.value for s in PrinterState],
         value_fn=lambda p, j: _state(p),
+        # Exempt from the offline rule on purpose: this is the one entity whose
+        # job is to say the printer is offline, and it cannot do that from an
+        # unavailable state.
+        offline_fn=lambda p: True,
     ),
     PrusaConnectSensorEntityDescription(
         key="nozzle_temperature",
@@ -383,9 +399,12 @@ class PrusaConnectSensor(PrusaConnectEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if the entity is available."""
+        printer = self._printer_data
+        if self._is_offline and self.entity_description.offline_fn(printer):
+            return self.coordinator.last_update_success
         if not super().available:
             return False
-        return self.entity_description.available_fn(self._printer_data)
+        return self.entity_description.available_fn(printer)
 
 
 async def async_setup_entry(
