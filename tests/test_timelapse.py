@@ -42,21 +42,43 @@ class _Api:
         return self.images[index]
 
 
+class _JobCoordinator:
+    """Stand-in for the job coordinator.
+
+    Separate on purpose: the printer payload carries no job at all, which is
+    how the finished videos ended up named after the printer.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict = {}
+
+    def set_job(self, job: dict | None, state: str = "PRINTING") -> None:
+        if job is None:
+            self.data.pop(PRINTER, None)
+        else:
+            self.data[PRINTER] = {**job, "state": state}
+
+
 class _Coordinator:
     """Stand-in for the printer coordinator."""
 
-    def __init__(self, state: str = PrinterState.IDLE) -> None:
+    def __init__(
+        self, state: str = PrinterState.IDLE, jobs: _JobCoordinator | None = None
+    ) -> None:
         self.data = {PRINTER: {"printer_state": state, "name": "Core One"}}
+        self.jobs = jobs
         self.listeners: list = []
 
     def async_add_listener(self, listener):  # noqa: ANN001, ANN201
         self.listeners.append(listener)
         return lambda: self.listeners.remove(listener)
 
-    def set_state(self, state: str, job: dict | None = None) -> None:
+    def set_state(
+        self, state: str, job: dict | None = None, job_state: str = "PRINTING"
+    ) -> None:
         self.data[PRINTER]["printer_state"] = state
-        if job is not None:
-            self.data[PRINTER]["job"] = job
+        if job is not None and self.jobs is not None:
+            self.jobs.set_job(job, job_state)
         for listener in list(self.listeners):
             listener()
 
@@ -103,16 +125,21 @@ def setup(tmp_path, monkeypatch):
 
     monkeypatch.setattr(TimelapseRecorder, "_async_encode", fake_encode)
 
-    def build(state=PrinterState.IDLE, api=None, cameras=None):
+    def build(state=PrinterState.IDLE, api=None, cameras=None, job=None):
         hass = _Hass(tmp_path)
-        coordinator = _Coordinator(state)
+        jobs = _JobCoordinator()
+        if job is not None:
+            jobs.set_job(job)
+        coordinator = _Coordinator(state, jobs)
         recorder = TimelapseRecorder(
             hass,
             api or _Api(),
             coordinator,
             {PRINTER: CAMERA_ID} if cameras is None else cameras,
+            jobs,
         )
         recorder.async_start()
+        build.jobs = jobs
         return recorder, hass, coordinator
 
     build.encoded = encoded
@@ -294,6 +321,63 @@ class TestCapture:
         await recorder._async_capture_all()
         await hass.drain()
         assert recorder._sessions == {}
+
+
+class TestNaming:
+    """The video is named after the print, which lives in the job coordinator."""
+
+    @pytest.mark.asyncio
+    async def test_named_after_the_file_being_printed(self, setup) -> None:
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(
+            PrinterState.PRINTING, job={"file": {"display_name": "Benchy.gcode"}}
+        )
+        assert recorder._sessions[PRINTER].label == "Benchy.gcode"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_finished_job_does_not_name_it(self, setup) -> None:
+        """Both coordinators poll on the same interval.
+
+        When a printer is first seen printing, the job coordinator can still be
+        showing the *previous* job. Naming this recording after that would be
+        actively misleading — worse than falling back to the printer.
+        """
+        recorder, hass, coordinator = setup()
+        setup.jobs.set_job({"file": {"display_name": "Previous.gcode"}}, "FINISHED")
+        coordinator.set_state(PrinterState.PRINTING)
+
+        assert recorder._sessions[PRINTER].label == "Core One"
+
+    @pytest.mark.asyncio
+    async def test_the_name_is_picked_up_once_the_job_appears(self, setup) -> None:
+        """The lag is normal, so the name is resolved again on every frame."""
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(PrinterState.PRINTING)
+        assert recorder._sessions[PRINTER].label == "Core One", "not known yet"
+
+        setup.jobs.set_job({"file": {"display_name": "Benchy.gcode"}})
+        await recorder._async_capture_all()
+
+        assert recorder._sessions[PRINTER].label == "Benchy.gcode"
+
+    @pytest.mark.asyncio
+    async def test_a_later_job_cannot_rename_the_recording(self, setup) -> None:
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(
+            PrinterState.PRINTING, job={"file": {"display_name": "First.gcode"}}
+        )
+        setup.jobs.set_job({"file": {"display_name": "Second.gcode"}})
+        await recorder._async_capture_all()
+
+        assert recorder._sessions[PRINTER].label == "First.gcode"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_printer_when_there_is_no_job(self, setup) -> None:
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(PrinterState.PRINTING)
+        await recorder._async_capture_all()
+
+        assert recorder._sessions[PRINTER].label == "Core One"
 
 
 class TestOutput:

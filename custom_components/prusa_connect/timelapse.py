@@ -34,7 +34,11 @@ from .const import (
     TIMELAPSE_WORK_DIR,
     PrinterState,
 )
-from .coordinator import PrusaConnectPrinterCoordinator
+from .coordinator import (
+    ACTIVE_JOB_STATES,
+    PrusaConnectJobCoordinator,
+    PrusaConnectPrinterCoordinator,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,17 +80,23 @@ class TimelapseSession:
 
     printer_uuid: str
     camera_id: int
-    job_name: str
+    printer_name: str
     started: datetime
     frame_dir: Path
+    job_name: str | None = None
     frames: int = 0
     digests: set[str] = field(default_factory=set)
+
+    @property
+    def label(self) -> str:
+        """What to call this recording: the file printed, else the printer."""
+        return self.job_name or self.printer_name or "print"
 
     @property
     def video_name(self) -> str:
         """Filename for the finished video, unique per print."""
         stamp = self.started.strftime("%Y%m%d-%H%M%S")
-        return f"{stamp}_{safe_name(self.job_name)}.mp4"
+        return f"{stamp}_{safe_name(self.label)}.mp4"
 
 
 class TimelapseRecorder:
@@ -98,14 +108,18 @@ class TimelapseRecorder:
         api: PrusaConnectAPI,
         coordinator: PrusaConnectPrinterCoordinator,
         cameras: dict[str, int],
+        job_coordinator: PrusaConnectJobCoordinator | None = None,
     ) -> None:
         """Initialize the recorder.
 
         ``cameras`` maps printer uuid to the camera id to photograph it with.
+        ``job_coordinator`` supplies the name of the file being printed; the
+        printer payload does not carry it.
         """
         self.hass = hass
         self._api = api
         self._coordinator = coordinator
+        self._job_coordinator = job_coordinator
         self._cameras = cameras
         self._sessions: dict[str, TimelapseSession] = {}
         self._cancel_timer: callback | None = None
@@ -163,22 +177,35 @@ class TimelapseRecorder:
             return
 
         started = dt_util.now()
-        job_name = _job_name(printer)
         frame_dir = (
             Path(self.hass.config.path(TIMELAPSE_WORK_DIR))
             / printer_uuid
             / started.strftime("%Y%m%d-%H%M%S")
         )
 
-        self._sessions[printer_uuid] = TimelapseSession(
+        session = TimelapseSession(
             printer_uuid=printer_uuid,
             camera_id=camera_id,
-            job_name=job_name,
+            printer_name=printer.get("name") or "",
             started=started,
             frame_dir=frame_dir,
         )
-        _LOGGER.info("Recording a timelapse of %s", job_name)
+        # May well be None here — the job coordinator often has not caught up
+        # with the printer yet. It is resolved again on every frame until it
+        # answers, and only the finished video's name depends on it.
+        session.job_name = self._async_job_name(printer_uuid)
+
+        self._sessions[printer_uuid] = session
+        _LOGGER.info("Recording a timelapse of %s", session.label)
         self._async_start_timer()
+
+    @callback
+    def _async_job_name(self, printer_uuid: str) -> str | None:
+        """The name of the file this printer is currently printing."""
+        if self._job_coordinator is None:
+            return None
+        job = (self._job_coordinator.data or {}).get(printer_uuid)
+        return _job_name(job)
 
     @callback
     def _async_start_timer(self) -> None:
@@ -218,10 +245,15 @@ class TimelapseRecorder:
         if session is None:
             return
 
+        # Keep asking until the job coordinator catches up. First answer wins,
+        # so a job queued behind this one cannot rename the recording.
+        if session.job_name is None:
+            session.job_name = self._async_job_name(printer_uuid)
+
         if session.frames >= TIMELAPSE_MAX_FRAMES:
             _LOGGER.warning(
                 "Timelapse for %s reached %d frames; stopping capture",
-                session.job_name,
+                session.label,
                 TIMELAPSE_MAX_FRAMES,
             )
             await self._async_finish(printer_uuid)
@@ -264,7 +296,7 @@ class TimelapseRecorder:
         if session.frames < 2:
             _LOGGER.debug(
                 "Discarding timelapse of %s: only %d frame(s)",
-                session.job_name,
+                session.label,
                 session.frames,
             )
             await self.hass.async_add_executor_job(_remove_dir, session.frame_dir)
@@ -281,7 +313,7 @@ class TimelapseRecorder:
             # them by hand or retry once the cause is fixed.
             _LOGGER.error(
                 "Could not build the timelapse for %s (%s). Frames kept in %s",
-                session.job_name,
+                session.label,
                 err,
                 session.frame_dir,
             )
@@ -289,7 +321,7 @@ class TimelapseRecorder:
 
         _LOGGER.info(
             "Timelapse of %s written to %s (%d frames)",
-            session.job_name,
+            session.label,
             output,
             session.frames,
         )
@@ -334,17 +366,18 @@ class TimelapseError(Exception):
     """Encoding a timelapse failed."""
 
 
-def _job_name(printer: dict) -> str:
-    """Name of the job the printer is running, for labelling the video."""
-    job = printer.get("job") or {}
+def _job_name(job: dict | None) -> str | None:
+    """Name of the file being printed, for labelling the video.
+
+    Only an *active* job counts. Both coordinators poll on the same interval,
+    so at the moment a printer is first seen printing the job coordinator can
+    still be showing the previous, finished job — and latching that name onto
+    this recording would be worse than having no name at all.
+    """
+    if not job or job.get("state") not in ACTIVE_JOB_STATES:
+        return None
     file = job.get("file") or {}
-    return (
-        file.get("display_name")
-        or file.get("name")
-        or job.get("path")
-        or printer.get("name")
-        or "print"
-    )
+    return file.get("display_name") or file.get("name") or job.get("path")
 
 
 def _media_root(hass: HomeAssistant) -> str:

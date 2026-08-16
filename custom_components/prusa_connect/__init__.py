@@ -82,7 +82,7 @@ async def async_setup_entry(
 
     if entry.options.get(CONF_TIMELAPSE, DEFAULT_TIMELAPSE):
         entry.runtime_data.timelapse = await _async_setup_timelapse(
-            hass, api, printer_coordinator
+            hass, api, printer_coordinator, job_coordinator
         )
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -100,6 +100,7 @@ async def _async_setup_timelapse(
     hass: HomeAssistant,
     api: PrusaConnectAPI,
     printer_coordinator: PrusaConnectPrinterCoordinator,
+    job_coordinator: PrusaConnectJobCoordinator,
 ) -> TimelapseRecorder | None:
     """Start recording timelapses for every printer that has a camera."""
     cameras: dict[str, int] = {}
@@ -121,7 +122,9 @@ async def _async_setup_timelapse(
         _LOGGER.warning("Timelapse is enabled but no printer has a camera")
         return None
 
-    recorder = TimelapseRecorder(hass, api, printer_coordinator, cameras)
+    recorder = TimelapseRecorder(
+        hass, api, printer_coordinator, cameras, job_coordinator
+    )
     recorder.async_start()
     return recorder
 
