@@ -6,6 +6,8 @@ sensor silently produced None. These assert the real snake_case contract.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from custom_components.prusa_connect.const import PrinterState
@@ -50,6 +52,56 @@ def test_sensor_values(printer, job, key, expected):
 def test_current_job_uses_display_name(printer, job):
     """The job name comes from the file's display name."""
     assert _values(printer, job)["current_job"] == job["file"]["display_name"]
+
+
+class TestElapsedWithoutReportedTime:
+    """Connect does not always report how long a print has been running.
+
+    Observed live: an active job carrying no ``time_printing`` key at all, and
+    a ``job_info`` of ``{origin_id, state, print_height}``. Elapsed, remaining
+    and progress all derive from this, so all three read unknown for an entire
+    eight-hour print.
+    """
+
+    def _live_job(self, seconds_ago: int, state: str = "PRINTING") -> dict:
+        return {
+            "state": state,
+            "start": time.time() - seconds_ago,
+            "file": {"meta": {"estimated_print_time": 30426}},
+        }
+
+    def test_falls_back_to_the_clock(self, printer):
+        printing = {**printer, "job_info": {"state": "PRINTING", "print_height": 46}}
+        elapsed = _values(printing, self._live_job(3600))["time_elapsed"]
+        assert 3595 <= elapsed <= 3605
+
+    def test_remaining_recovers_too(self, printer):
+        """It derives from elapsed, so it was collateral damage."""
+        printing = {**printer, "job_info": {"state": "PRINTING", "print_height": 46}}
+        values = _values(printing, self._live_job(3600))
+        assert 26820 <= values["time_remaining"] <= 26830
+        assert values["time_remaining_hm"] == "7:27"
+
+    def test_a_reported_time_still_wins(self, printer):
+        """The clock overcounts a paused print, so it is only a fallback."""
+        printing = {**printer, "job_info": {"time_printing": 120}}
+        assert _values(printing, self._live_job(3600))["time_elapsed"] == 120
+
+    def test_the_jobs_own_figure_still_wins(self, printer):
+        job = {**self._live_job(3600), "time_printing": 250}
+        printing = {**printer, "job_info": {"state": "PRINTING"}}
+        assert _values(printing, job)["time_elapsed"] == 250
+
+    def test_a_finished_job_does_not_keep_counting(self, printer):
+        """Otherwise a completed print would tick upward forever."""
+        job = self._live_job(3600, state="FIN_OK")
+        printing = {**printer, "job_info": {"state": "FIN_OK"}}
+        assert _values(printing, job)["time_elapsed"] is None
+
+    def test_a_job_with_no_start_is_not_guessed_at(self, printer):
+        job = {"state": "PRINTING", "file": {"meta": {"estimated_print_time": 30426}}}
+        printing = {**printer, "job_info": {"state": "PRINTING"}}
+        assert _values(printing, job)["time_elapsed"] is None
 
 
 class TestReadableDurations:

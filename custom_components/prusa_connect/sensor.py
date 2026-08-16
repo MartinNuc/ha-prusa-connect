@@ -23,9 +23,14 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
+from homeassistant.util import dt as dt_util
 
 from .const import PrinterState
-from .coordinator import PrusaConnectJobCoordinator, PrusaConnectPrinterCoordinator
+from .coordinator import (
+    ACTIVE_JOB_STATES,
+    PrusaConnectJobCoordinator,
+    PrusaConnectPrinterCoordinator,
+)
 from .entity import PrusaConnectEntity
 
 if TYPE_CHECKING:
@@ -90,14 +95,34 @@ def _estimated_print_time(job: dict | None) -> float | None:
 
 
 def _elapsed(printer: dict, job: dict | None) -> StateType | None:
-    """Seconds spent printing the current job."""
+    """Seconds spent printing the current job.
+
+    Connect reports this for finished jobs, and usually publishes it in
+    ``job_info`` while a print runs. Neither is guaranteed: an active job can
+    carry no ``time_printing`` key at all and a ``job_info`` of nothing but
+    ``{origin_id, state, print_height}``. That left this sensor — and, since it
+    derives from this one, time remaining — unknown for a whole eight-hour
+    print, which is precisely when they are worth having.
+
+    So fall back to the wall clock since the job started. It is an
+    approximation: a paused print keeps accruing elapsed time where
+    ``time_printing`` would not, so a reported value always wins.
+    """
     value = (printer.get("job_info") or {}).get("time_printing")
     if value is None:
         value = (job or {}).get("time_printing")
     try:
         return int(value)
     except (ValueError, TypeError):
+        pass
+
+    if (job or {}).get("state") not in ACTIVE_JOB_STATES:
         return None
+    try:
+        started = float((job or {}).get("start"))
+    except (ValueError, TypeError):
+        return None
+    return max(0, int(dt_util.utcnow().timestamp() - started))
 
 
 def _remaining(printer: dict, job: dict | None) -> StateType | None:

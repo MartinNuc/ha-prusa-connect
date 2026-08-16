@@ -172,6 +172,12 @@ def _install_homeassistant_stubs() -> None:
     util = _module("homeassistant.util")
     dt_util = _module("homeassistant.util.dt")
     dt_util.now = lambda: __import__("datetime").datetime(2026, 8, 14, 20, 30, 0)
+    # utcnow is deliberately the real clock, not the frozen one above: the
+    # elapsed-time fallback measures against wall time, and tests that build a
+    # job "an hour ago" need the two to agree.
+    dt_util.utcnow = lambda: __import__("datetime").datetime.now(
+        __import__("datetime").UTC
+    )
     util.dt = dt_util
 
     helpers.update_coordinator = update_coordinator
