@@ -407,6 +407,40 @@ class TestIceServerOrdering:
         assert config.iceServers[0].credential == "c"
 
 
+class TestFailureLogging:
+    """The diagnosis is gone once the session closes, so record it."""
+
+    def test_summarises_candidate_kinds(self) -> None:
+        sdp = (
+            "a=candidate:1 1 udp 1 10.0.0.1 1 typ host\r\n"
+            "a=candidate:2 1 udp 1 1.2.3.4 1 typ srflx raddr 0.0.0.0\r\n"
+            "a=candidate:3 1 udp 1 5.6.7.8 1 typ relay raddr 0.0.0.0\r\n"
+        )
+        assert ws._candidate_types(sdp) == "host, srflx, relay"
+
+    def test_repeats_are_collapsed(self) -> None:
+        sdp = (
+            "a=candidate:1 1 udp 1 10.0.0.1 1 typ host\r\n"
+            "a=candidate:1 1 udp 1 10.0.0.1 1 typ host\r\n"
+        )
+        assert ws._candidate_types(sdp) == "host"
+
+    def test_nothing_gathered_reads_as_empty(self) -> None:
+        assert ws._candidate_types("v=0\r\nm=video 9\r\n") == ""
+
+    @pytest.mark.asyncio
+    async def test_the_failure_is_logged_with_both_sides(self, caplog) -> None:
+        import logging
+
+        session = make_session()
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(SignalingError):
+                await _drive(session, connect="failed")
+
+        assert "We offered" in caplog.text
+        assert "the camera offered" in caplog.text
+
+
 class TestLateFailure:
     """A stream that dies after the viewer is answered."""
 

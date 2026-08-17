@@ -231,6 +231,15 @@ class CameraStreamSession:
         ours = _sdp_of(self._upstream, "localDescription")
         theirs = _sdp_of(self._upstream, "remoteDescription")
 
+        # What each side had to offer is the whole diagnosis, and it is gone the
+        # moment the session closes. At warning level so it survives in the log
+        # of an installation that is not running with debug turned on.
+        _LOGGER.warning(
+            "Camera stream did not connect. We offered %s; the camera offered %s",
+            _candidate_types(ours) or "nothing",
+            _candidate_types(theirs) or "nothing",
+        )
+
         if "typ relay" not in theirs:
             return (
                 "The camera could not get a relay on Prusa's TURN server, which "
@@ -305,6 +314,22 @@ class CameraStreamSession:
         self._signaling = None
         self._downstream = None
         self._upstream = None
+
+
+def _candidate_types(sdp: str) -> str:
+    """Summarise an SDP's candidates as "host, srflx, relay".
+
+    Which kinds each side gathered is what decides whether a connection was
+    ever possible, and the addresses themselves are noise in a log.
+    """
+    kinds: list[str] = []
+    for line in sdp.replace("\r\n", "\n").split("\n"):
+        if " typ " not in line or not line.strip().startswith("a=candidate:"):
+            continue
+        kind = line.split(" typ ", 1)[1].split()[0]
+        if kind not in kinds:
+            kinds.append(kind)
+    return ", ".join(kinds)
 
 
 def _sdp_of(pc, which: str) -> str:  # noqa: ANN001
