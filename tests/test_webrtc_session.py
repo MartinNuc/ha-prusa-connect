@@ -32,6 +32,10 @@ ANSWER_SDP = (
     "a=candidate:2 1 udp 1677729535 94.112.176.46 50470 typ srflx\r\n"
     "a=candidate:3 1 udp 50340095 34.159.146.76 52342 typ relay\r\n"
     "a=ice-ufrag:abcd\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "a=candidate:1 1 udp 2113937151 192.168.1.5 50470 typ host\r\n"
+    "a=candidate:2 1 udp 1677729535 94.112.176.46 50470 typ srflx\r\n"
+    "a=candidate:3 1 udp 50340095 34.159.146.76 52342 typ relay\r\n"
     "ANSWER\r\n"
 )
 HOST_ONLY_SDP = "v=0\r\na=candidate:1 1 udp 1 10.0.0.1 1 typ host\r\n"
@@ -228,6 +232,18 @@ class TestTrickle:
         await upstream.fire("track", _Track())
         await upstream.enter("connected")
         await task
+
+    @pytest.mark.asyncio
+    async def test_a_candidate_repeated_per_m_section_is_sent_once(self) -> None:
+        """aiortc lists the same candidates under video and the data channel."""
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        sent = [c for c, _mid in signaling.candidates]
+        assert len(sent) == len(set(sent)) == 3, sent
 
     @pytest.mark.asyncio
     async def test_candidates_use_the_mid_the_camera_expects(self) -> None:

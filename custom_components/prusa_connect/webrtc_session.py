@@ -199,10 +199,17 @@ class CameraStreamSession:
         """
         if self._signaling is None:
             return
+
+        # The answer has an m-section for video and another for the data
+        # channel, and aiortc repeats the same candidate lines under each. They
+        # describe one transport, so sending them twice just doubles the
+        # signalling traffic for no gain.
+        seen: set[str] = set()
         for line in sdp.replace("\r\n", "\n").split("\n"):
             candidate = line.strip()
-            if not candidate.startswith("a=candidate:"):
+            if not candidate.startswith("a=candidate:") or candidate in seen:
                 continue
+            seen.add(candidate)
             try:
                 await self._signaling.send_candidate(candidate, MEDIA_MID)
             except Exception:  # noqa: BLE001 - one candidate is not the session
