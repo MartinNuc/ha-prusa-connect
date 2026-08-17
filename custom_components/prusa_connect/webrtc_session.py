@@ -218,15 +218,27 @@ class CameraStreamSession:
     def _connect_failure(self) -> str:
         """Explain a failed camera connection, checking the likeliest cause.
 
-        The camera offers only its own LAN address and a TURN relay, so when we
-        cannot allocate a relay of our own there is no path left and the failure
-        is certain rather than bad luck. Prusa's TURN server refuses further
-        allocations ("486 Allocation Quota Reached") after repeated attempts and
-        holds that state for several minutes.
+        Prusa's TURN server allows only a handful of allocations per account and
+        answers "486 Allocation Quota Reached" beyond that, holding the refusal
+        for the ten-minute lifetime of the allocations already out. Both ends
+        draw on that same pool, so the interesting question is which of us went
+        without — the messages differ because the remedies differ, and because
+        "did not connect" sends people looking at their own network.
+
+        Measured on a working connection: the pair that carries the media runs
+        to the *camera's* relay. Ours is the less important of the two.
         """
-        pc = self._upstream
-        sdp = pc.localDescription.sdp if pc and pc.localDescription else ""
-        if "typ relay" not in sdp:
+        ours = _sdp_of(self._upstream, "localDescription")
+        theirs = _sdp_of(self._upstream, "remoteDescription")
+
+        if "typ relay" not in theirs:
+            return (
+                "The camera could not get a relay on Prusa's TURN server, which "
+                "limits how many are open at once, so there was no route to it. "
+                "Wait a few minutes before trying again — opening the stream "
+                "repeatedly keeps the limit full"
+            )
+        if "typ relay" not in ours:
             return (
                 "Could not allocate a relay on Prusa's TURN server, so there was "
                 "no route to the camera. This usually clears on its own after a "
@@ -293,6 +305,12 @@ class CameraStreamSession:
         self._signaling = None
         self._downstream = None
         self._upstream = None
+
+
+def _sdp_of(pc, which: str) -> str:  # noqa: ANN001
+    """The SDP on one side of a peer connection, or "" if there is not one yet."""
+    description = getattr(pc, which, None) if pc is not None else None
+    return getattr(description, "sdp", "") or ""
 
 
 def _resolve(future: asyncio.Future | None, value: Any) -> None:

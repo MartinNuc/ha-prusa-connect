@@ -86,6 +86,11 @@ class _FakePeerConnection:
     async def setRemoteDescription(self, _desc) -> None:  # noqa: N802
         return None
 
+    # Default: the camera did get a relay, which is the healthy case.
+    remoteDescription = _Description(  # noqa: N815
+        "v=0\r\na=candidate:9 1 udp 1 34.159.146.76 52426 typ relay\r\n"
+    )
+
     async def setLocalDescription(self, desc) -> None:  # noqa: ANN001, N802
         # aiortc finishes gathering here, so the stored SDP is what carries our
         # candidates — which is exactly what the relay diagnosis reads back.
@@ -329,6 +334,27 @@ class TestDiagnosis:
         await upstream.fire("track", _Track())
 
         with pytest.raises(SignalingError, match="TURN"):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_blames_the_cameras_relay_when_it_has_none(self) -> None:
+        """The pair that carries media runs to the camera's relay, not ours.
+
+        When the quota is full the camera goes without and offers only an
+        unreachable address, which reads as a local network problem unless the
+        message says otherwise.
+        """
+        session = make_session()
+        task = asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        upstream = _FakePeerConnection.instances[0]
+        upstream.remoteDescription = _Description(
+            "v=0\r\na=candidate:2 1 udp 1 185.87.61.1 58303 typ srflx\r\n"
+        )
+        await upstream.fire("track", _Track())
+        await upstream.enter("failed")
+
+        with pytest.raises(SignalingError, match="camera could not get a relay"):
             await task
 
     @pytest.mark.asyncio
