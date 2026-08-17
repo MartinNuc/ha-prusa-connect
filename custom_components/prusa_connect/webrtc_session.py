@@ -35,6 +35,7 @@ from aiortc.contrib.media import MediaRelay
 from aiortc.sdp import candidate_from_sdp
 
 from .signaling import PrusaCameraSignaling, SignalingError
+from .webrtc_protocol import MEDIA_MID
 
 if TYPE_CHECKING:
     from .api import PrusaConnectAPI
@@ -134,6 +135,7 @@ class CameraStreamSession:
             await pc.setLocalDescription(await pc.createAnswer())
             assert self._signaling is not None
             await self._signaling.send_answer(pc.localDescription.sdp)
+            await self._async_trickle(pc.localDescription.sdp)
 
         async def on_candidate(candidate: str, mid: str) -> None:
             try:
@@ -179,6 +181,32 @@ class CameraStreamSession:
             raise SignalingError(self._connect_failure())
 
         return track
+
+    async def _async_trickle(self, sdp: str) -> None:
+        """Send our ICE candidates to the camera, one message each.
+
+        aiortc finishes gathering before ``setLocalDescription`` returns, so the
+        answer already lists every candidate — and the camera ignores them
+        there. It offers ``a=ice-options:ice2,trickle`` and, as a capture of the
+        working web client shows, expects each candidate as its own CANDIDATE
+        message. Without them it never learns an address to send to, so ICE sits
+        in ``checking`` until it times out: an offer arrives, an answer goes
+        back, and nothing connects.
+
+        The candidates stay in the answer as well. The web client omits them,
+        but leaving them costs nothing and keeps the SDP self-describing for any
+        peer that does read them.
+        """
+        if self._signaling is None:
+            return
+        for line in sdp.replace("\r\n", "\n").split("\n"):
+            candidate = line.strip()
+            if not candidate.startswith("a=candidate:"):
+                continue
+            try:
+                await self._signaling.send_candidate(candidate, MEDIA_MID)
+            except Exception:  # noqa: BLE001 - one candidate is not the session
+                _LOGGER.debug("Could not send candidate %r", candidate[:60])
 
     def _connect_failure(self) -> str:
         """Explain a failed camera connection, checking the likeliest cause.

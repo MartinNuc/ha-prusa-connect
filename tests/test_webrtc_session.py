@@ -22,6 +22,18 @@ from custom_components.prusa_connect.signaling import SignalingError
 ICE_CONFIG = {"ice_servers": [], "policy": None, "ttl": 60}
 
 RELAY_SDP = "v=0\r\na=candidate:1 1 udp 1 10.0.0.1 1 typ relay\r\n"
+
+# Shaped like a real aiortc answer: gathering finishes before
+# setLocalDescription returns, so every candidate is already in the SDP.
+ANSWER_SDP = (
+    "v=0\r\n"
+    "m=video 9 UDP/TLS/RTP/SAVPF 102\r\n"
+    "a=candidate:1 1 udp 2113937151 192.168.1.5 50470 typ host\r\n"
+    "a=candidate:2 1 udp 1677729535 94.112.176.46 50470 typ srflx\r\n"
+    "a=candidate:3 1 udp 50340095 34.159.146.76 52342 typ relay\r\n"
+    "a=ice-ufrag:abcd\r\n"
+    "ANSWER\r\n"
+)
 HOST_ONLY_SDP = "v=0\r\na=candidate:1 1 udp 1 10.0.0.1 1 typ host\r\n"
 
 
@@ -76,7 +88,7 @@ class _FakePeerConnection:
         self.localDescription = desc
 
     async def createAnswer(self):  # noqa: ANN201, N802
-        return _Description("v=0\r\nANSWER\r\n")
+        return _Description(ANSWER_SDP)
 
     async def close(self) -> None:
         self.closed = True
@@ -91,6 +103,8 @@ class _FakeSignaling:
         self.on_offer = on_offer
         self.on_candidate = on_candidate
         self.closed = False
+        self.answers: list[str] = []
+        self.candidates: list[tuple[str, str]] = []
         _FakeSignaling.instances.append(self)
 
     async def connect(self) -> None:
@@ -99,8 +113,11 @@ class _FakeSignaling:
     async def request_stream(self, *_args) -> None:
         return None
 
-    async def send_answer(self, _sdp: str) -> None:
-        return None
+    async def send_answer(self, sdp: str) -> None:
+        self.answers.append(sdp)
+
+    async def send_candidate(self, candidate: str, mid: str) -> None:
+        self.candidates.append((candidate, mid))
 
     async def close(self) -> None:
         self.closed = True
@@ -182,6 +199,90 @@ class TestStartup:
 
         assert _FakeSignaling.instances[0].closed, "signalling left open"
         assert all(pc.closed for pc in _FakePeerConnection.instances)
+
+
+class TestTrickle:
+    """The camera reads candidates from CANDIDATE messages, not from the SDP.
+
+    It offers ``a=ice-options:ice2,trickle``, and a capture of the working web
+    client shows every candidate sent as its own message. Leaving them only in
+    the answer means the camera never learns an address to send to: an offer
+    arrives, an answer goes back, and ICE sits in checking until it times out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_candidate_is_sent_separately(self) -> None:
+        session = make_session()
+        task = asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        sent = [c for c, _mid in signaling.candidates]
+        assert len(sent) == 3, sent
+        assert any("typ host" in c for c in sent)
+        assert any("typ srflx" in c for c in sent)
+        assert any("typ relay" in c for c in sent)
+
+        upstream = _FakePeerConnection.instances[0]
+        await upstream.fire("track", _Track())
+        await upstream.enter("connected")
+        await task
+
+    @pytest.mark.asyncio
+    async def test_candidates_use_the_mid_the_camera_expects(self) -> None:
+        """Observed on the wire: every candidate carries mid "video-stream"."""
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        assert {mid for _c, mid in signaling.candidates} == {"video-stream"}
+
+    @pytest.mark.asyncio
+    async def test_the_answer_still_goes_first(self) -> None:
+        """Candidates for an unanswered session have nothing to attach to."""
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        assert signaling.answers, "no answer was sent"
+        assert "ANSWER" in signaling.answers[0]
+
+    @pytest.mark.asyncio
+    async def test_non_candidate_lines_are_not_sent(self) -> None:
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        for candidate, _mid in signaling.candidates:
+            assert candidate.startswith("a=candidate:"), candidate
+
+    @pytest.mark.asyncio
+    async def test_one_rejected_candidate_does_not_kill_the_session(self) -> None:
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+
+        calls = {"n": 0}
+
+        async def flaky(candidate: str, mid: str) -> None:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("transient")
+            signaling.candidates.append((candidate, mid))
+
+        signaling.send_candidate = flaky
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        assert calls["n"] == 3, "gave up after the failure"
+        assert len(signaling.candidates) == 2
 
 
 class TestDiagnosis:
