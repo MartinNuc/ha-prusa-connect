@@ -50,6 +50,9 @@ FAST_SCAN_DURATION: Final = 30  # seconds
 # was last in.
 CONNECT_STATE_OFFLINE: Final = "OFFLINE"
 
+CONF_FORCE_RELAY: Final = "force_relay"
+DEFAULT_FORCE_RELAY: Final = False
+
 CONF_TIMELAPSE: Final = "timelapse"
 DEFAULT_TIMELAPSE: Final = False
 

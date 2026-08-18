@@ -49,7 +49,11 @@ def _attach_debug_log(hass: HomeAssistant) -> None:
     )
     for name, level in (
         ("custom_components.prusa_connect", logging.DEBUG),
-        ("aioice.ice", logging.INFO),
+        # The whole of aioice, not just ice: a relay-to-relay pair failing
+        # between two addresses on the same TURN server is a TURN-layer
+        # problem, and aioice.turn is where allocations and channel binds are
+        # reported.
+        ("aioice", logging.INFO),
         ("aiortc", logging.INFO),
     ):
         logger = logging.getLogger(name)

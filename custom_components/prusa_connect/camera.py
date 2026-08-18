@@ -17,6 +17,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api import PrusaConnectAPI
+from .const import CONF_FORCE_RELAY, DEFAULT_FORCE_RELAY
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
 from .signaling import SignalingError
@@ -62,6 +63,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         api: PrusaConnectAPI,
         printer_uuid: str,
         camera: dict,
+        relay_only: bool = False,
     ) -> None:
         """Initialize the camera entity."""
         PrusaConnectEntity.__init__(self, coordinator, printer_uuid)
@@ -89,6 +91,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         self._sessions: dict[str, CameraStreamSession] = {}
         self._environment: dict[str, str] | None = None
         self._snapshot_failures = 0
+        self._relay_only = relay_only
         # When the last stream attempt failed, so the frontend's automatic
         # retry can be refused instead of spending another relay slot.
         self._failed_at: float | None = None
@@ -186,6 +189,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
             self._camera_token,
             self._api.access_token,
             on_closed=lambda: self._async_forget_session(session_id),
+            relay_only=self._relay_only,
         )
         self._sessions[session_id] = session
 
@@ -277,7 +281,13 @@ async def async_setup_entry(
             continue
 
         entities.extend(
-            PrusaConnectCamera(printer_coordinator, data.api, printer_uuid, camera)
+            PrusaConnectCamera(
+                printer_coordinator,
+                data.api,
+                printer_uuid,
+                camera,
+                relay_only=entry.options.get(CONF_FORCE_RELAY, DEFAULT_FORCE_RELAY),
+            )
             for camera in cameras
             if camera.get("id") is not None
         )

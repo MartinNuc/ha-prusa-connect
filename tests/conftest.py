@@ -278,6 +278,17 @@ def _install_aiortc_stub() -> None:
     media.MediaRelay = type("MediaRelay", (), {"__init__": lambda self, *a, **k: None})
     _module("aiortc.contrib").media = media
 
+    # aioice ships with aiortc at runtime but is not installed here. The
+    # relay-only policy is set on its Connection objects, so the enum has to
+    # exist or that code silently takes its "not available" path and the tests
+    # assert nothing.
+    import enum as _enum
+
+    aioice = _module("aioice")
+    aioice_ice = _module("aioice.ice")
+    aioice_ice.TransportPolicy = _enum.Enum("TransportPolicy", ["ALL", "RELAY"])
+    aioice.ice = aioice_ice
+
     sdp = _module("aiortc.sdp")
     sdp.candidate_from_sdp = lambda value: value
 

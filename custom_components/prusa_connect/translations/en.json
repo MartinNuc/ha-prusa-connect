@@ -203,10 +203,12 @@
       "init": {
         "title": "Prusa Connect options",
         "data": {
-          "timelapse": "Record a timelapse of each print"
+          "timelapse": "Record a timelapse of each print",
+          "force_relay": "Always use Prusa's relay for the live stream"
         },
         "data_description": {
-          "timelapse": "Saves a snapshot every 30 seconds while printing, then builds a video when the print ends. Videos appear in Media → prusa_connect (/media/prusa_connect), named after the print, for example 20260815-143000_Benchy.gcode.mp4. Frames are held in .prusa_connect_timelapse while the print runs and use a few hundred megabytes; they are deleted once the video is made."
+          "timelapse": "Saves a snapshot every 30 seconds while printing, then builds a video when the print ends. Videos appear in Media → prusa_connect (/media/prusa_connect), named after the print, for example 20260815-143000_Benchy.gcode.mp4. Frames are held in .prusa_connect_timelapse while the print runs and use a few hundred megabytes; they are deleted once the video is made.",
+          "force_relay": "Try this if the live view fails to load. Home Assistant normally offers the camera every network address this machine has, including internal Docker ones, and on some setups the camera answers none of them. This restricts the connection to Prusa's relay, which is the route that works anyway when Home Assistant and the printer are in different buildings. Leave it off if the printer is on the same network as Home Assistant, where a direct connection is faster and better quality."
         }
       }
     }
