@@ -396,17 +396,17 @@ class TestIceServerOrdering:
         assert config.iceServers[0].urls == ["stun:b:3478", "stun:a:5349"]
 
 
-class TestWeTakeNoRelay:
-    """Our relay competes with the camera's for one small per-account pool.
+class TestWeKeepOurOwnRelay:
+    """Dropping our relay stops the camera gathering one, and kills the stream.
 
-    A failing click alternates: one attempt we hold the relay and the camera
-    has none, the next the camera holds it and we have none. Neither can
-    connect. The camera's is the one that carries the media, so we stop asking
-    for one — the pair that worked ran to the camera's relay from an ordinary
-    local address.
+    Measured back to back on the same camera, sixty seconds apart: with our
+    configuration reduced to STUN the camera offered no candidates at all and
+    the connection failed; with TURN restored it offered a relay and delivered
+    343 frames. Whatever the camera's reasoning, ours is what makes its relay
+    appear.
     """
 
-    def test_turn_is_dropped_from_our_configuration(self) -> None:
+    def test_turn_survives_in_our_configuration(self) -> None:
         config = ws._to_aiortc(
             [
                 {
@@ -421,23 +421,21 @@ class TestWeTakeNoRelay:
             ]
         )
         every_url = [u for srv in config.iceServers for u in srv.urls]
-        assert not any("turn" in u for u in every_url), every_url
-        assert every_url == ["stun:b:3478", "stun:a:5349"]
+        assert any("turn" in u for u in every_url), every_url
+        assert config.iceServers[0].credential == "c"
 
-    def test_a_server_offering_both_keeps_only_its_stun_urls(self) -> None:
-        config = ws._to_aiortc(
-            [{"urls": ["turn:x:3478", "stun:y:3478"], "username": "u"}]
-        )
-        assert [u for srv in config.iceServers for u in srv.urls] == ["stun:y:3478"]
+    def test_turn_ordering_is_left_exactly_as_connect_sent_it(self) -> None:
+        """aioice speaks TURN over TLS, and the turns: URL first is what works."""
+        urls = [
+            "turns:coturn.prusa3d.com:5349",
+            "turn:coturn.prusa3d.com:3478?transport=udp",
+        ]
+        config = ws._to_aiortc([{"urls": urls, "username": "u"}])
+        assert config.iceServers[0].urls == urls
 
-    def test_a_turn_only_server_is_dropped_entirely(self) -> None:
-        """Not left behind as an entry with no URLs, which aiortc dislikes."""
-        config = ws._to_aiortc([{"urls": ["turn:x:3478"], "username": "u"}])
-        assert config.iceServers == []
-
-    def test_stun_credentials_are_preserved(self) -> None:
-        config = ws._to_aiortc([{"urls": ["stun:a:3478"], "username": "u"}])
-        assert config.iceServers[0].username == "u"
+    def test_stun_is_still_reordered(self) -> None:
+        config = ws._to_aiortc([{"urls": ["stun:a:5349", "stun:b:3478"]}])
+        assert config.iceServers[0].urls == ["stun:b:3478", "stun:a:5349"]
 
 
 class TestFailureLogging:

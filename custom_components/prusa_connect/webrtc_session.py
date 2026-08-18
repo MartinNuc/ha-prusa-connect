@@ -359,49 +359,41 @@ async def _before(future: asyncio.Future, deadline: float, what: str) -> Any:
 
 
 def _to_aiortc(ice_servers: list[dict[str, Any]]) -> RTCConfiguration:
-    """Build *our* ICE configuration: STUN only, no relay of our own.
+    """Translate Connect's ICE configuration into aiortc's form.
 
-    Prusa's TURN server allows only a handful of allocations per account, and
-    both ends of a stream draw on that same pool — the camera is handed these
-    very credentials in the stream request and allocates as us. Taking one for
-    ourselves therefore takes it from the camera, and the log of a failing
-    click shows exactly that alternating: one attempt we hold the relay and the
-    camera has none, the next the camera holds it and we have none. Neither
-    combination can connect.
+    We must allocate a relay of our own, and it is worth being explicit about
+    why, because the opposite was tried and it broke the stream outright.
 
-    The camera's relay is the one that matters. Measured on both successful
-    connections, the pair that carried the media ran to it:
+    The reasoning for dropping it looked sound: the pair that carries the media
+    runs to the *camera's* relay, sending to a relay is ordinary outbound
+    traffic, and both ends draw on one small per-account quota, so ours seemed
+    a waste that starved the camera. Measured back to back, sixty seconds
+    apart, on the same camera:
 
-        SUCCEEDED  172.30.33.7 -> 34.159.146.76  (the camera's relay)
+        our config STUN only   -> the camera offered nothing      -> failed
+        our config with TURN   -> the camera offered a relay       -> 343 frames
 
-    Sending *to* a relay is ordinary outbound traffic, so a relay of our own
-    adds nothing there. It is not free of downside — it removes the
-    relay-to-reflexive path that could rescue a camera which failed to
-    allocate — but that combination has never once connected here, while the
-    contention it causes reliably breaks the case that does.
+    The camera evidently gathers a relay only when its peer has one. Whatever
+    the mechanism, ours is what makes the camera's appear, and without it there
+    is no route at all.
 
-    Note this trims only what aiortc is told. The list sent to the camera in
-    ``request_stream`` keeps its TURN servers and stays byte-identical to the
-    browser's.
+    Only the ordering differs from what Connect sends, and only for STUN — the
+    list handed to the camera must stay byte-identical to the browser's.
     """
     return RTCConfiguration(
         iceServers=[
             RTCIceServer(
-                urls=_order_urls(urls),
+                urls=_order_urls(
+                    server["urls"]
+                    if isinstance(server["urls"], list)
+                    else [server["urls"]]
+                ),
                 username=server.get("username"),
                 credential=server.get("credential"),
             )
             for server in ice_servers
-            for urls in [_stun_only(server)]
-            if urls
         ]
     )
-
-
-def _stun_only(server: dict[str, Any]) -> list[str]:
-    """The STUN URLs of an ICE server, dropping any TURN ones."""
-    urls = server["urls"] if isinstance(server["urls"], list) else [server["urls"]]
-    return [url for url in urls if str(url).startswith("stun:")]
 
 
 def _order_urls(urls: list[str]) -> list[str]:
