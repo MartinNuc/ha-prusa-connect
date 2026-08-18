@@ -359,25 +359,49 @@ async def _before(future: asyncio.Future, deadline: float, what: str) -> Any:
 
 
 def _to_aiortc(ice_servers: list[dict[str, Any]]) -> RTCConfiguration:
-    """Translate Connect's ICE configuration into aiortc's form.
+    """Build *our* ICE configuration: STUN only, no relay of our own.
 
-    Only the ordering differs from what Connect sends, and only for STUN — the
-    list handed to the camera must stay byte-identical to the browser's.
+    Prusa's TURN server allows only a handful of allocations per account, and
+    both ends of a stream draw on that same pool — the camera is handed these
+    very credentials in the stream request and allocates as us. Taking one for
+    ourselves therefore takes it from the camera, and the log of a failing
+    click shows exactly that alternating: one attempt we hold the relay and the
+    camera has none, the next the camera holds it and we have none. Neither
+    combination can connect.
+
+    The camera's relay is the one that matters. Measured on both successful
+    connections, the pair that carried the media ran to it:
+
+        SUCCEEDED  172.30.33.7 -> 34.159.146.76  (the camera's relay)
+
+    Sending *to* a relay is ordinary outbound traffic, so a relay of our own
+    adds nothing there. It is not free of downside — it removes the
+    relay-to-reflexive path that could rescue a camera which failed to
+    allocate — but that combination has never once connected here, while the
+    contention it causes reliably breaks the case that does.
+
+    Note this trims only what aiortc is told. The list sent to the camera in
+    ``request_stream`` keeps its TURN servers and stays byte-identical to the
+    browser's.
     """
     return RTCConfiguration(
         iceServers=[
             RTCIceServer(
-                urls=_order_urls(
-                    server["urls"]
-                    if isinstance(server["urls"], list)
-                    else [server["urls"]]
-                ),
+                urls=_order_urls(urls),
                 username=server.get("username"),
                 credential=server.get("credential"),
             )
             for server in ice_servers
+            for urls in [_stun_only(server)]
+            if urls
         ]
     )
+
+
+def _stun_only(server: dict[str, Any]) -> list[str]:
+    """The STUN URLs of an ICE server, dropping any TURN ones."""
+    urls = server["urls"] if isinstance(server["urls"], list) else [server["urls"]]
+    return [url for url in urls if str(url).startswith("stun:")]
 
 
 def _order_urls(urls: list[str]) -> list[str]:

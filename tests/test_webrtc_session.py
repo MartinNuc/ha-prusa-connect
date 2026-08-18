@@ -391,20 +391,53 @@ class TestIceServerOrdering:
         ]
         assert ws._order_urls(urls) == urls
 
-    def test_the_config_we_build_reorders_stun_only(self) -> None:
+    def test_the_config_we_build_reorders_stun(self) -> None:
+        config = ws._to_aiortc([{"urls": ["stun:a:5349", "stun:b:3478"]}])
+        assert config.iceServers[0].urls == ["stun:b:3478", "stun:a:5349"]
+
+
+class TestWeTakeNoRelay:
+    """Our relay competes with the camera's for one small per-account pool.
+
+    A failing click alternates: one attempt we hold the relay and the camera
+    has none, the next the camera holds it and we have none. Neither can
+    connect. The camera's is the one that carries the media, so we stop asking
+    for one — the pair that worked ran to the camera's relay from an ordinary
+    local address.
+    """
+
+    def test_turn_is_dropped_from_our_configuration(self) -> None:
         config = ws._to_aiortc(
             [
                 {
-                    "urls": ["turns:coturn.prusa3d.com:5349", "turn:x:3478"],
+                    "urls": [
+                        "turns:coturn.prusa3d.com:5349",
+                        "turn:coturn.prusa3d.com:3478?transport=udp",
+                    ],
                     "username": "u",
                     "credential": "c",
                 },
                 {"urls": ["stun:a:5349", "stun:b:3478"]},
             ]
         )
-        assert config.iceServers[0].urls[0] == "turns:coturn.prusa3d.com:5349"
-        assert config.iceServers[1].urls[0] == "stun:b:3478"
-        assert config.iceServers[0].credential == "c"
+        every_url = [u for srv in config.iceServers for u in srv.urls]
+        assert not any("turn" in u for u in every_url), every_url
+        assert every_url == ["stun:b:3478", "stun:a:5349"]
+
+    def test_a_server_offering_both_keeps_only_its_stun_urls(self) -> None:
+        config = ws._to_aiortc(
+            [{"urls": ["turn:x:3478", "stun:y:3478"], "username": "u"}]
+        )
+        assert [u for srv in config.iceServers for u in srv.urls] == ["stun:y:3478"]
+
+    def test_a_turn_only_server_is_dropped_entirely(self) -> None:
+        """Not left behind as an entry with no URLs, which aiortc dislikes."""
+        config = ws._to_aiortc([{"urls": ["turn:x:3478"], "username": "u"}])
+        assert config.iceServers == []
+
+    def test_stun_credentials_are_preserved(self) -> None:
+        config = ws._to_aiortc([{"urls": ["stun:a:3478"], "username": "u"}])
+        assert config.iceServers[0].username == "u"
 
 
 class TestFailureLogging:

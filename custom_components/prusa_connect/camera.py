@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.camera import (
@@ -34,6 +35,14 @@ FRAME_INTERVAL = 30.0
 # camera uploads on its own thirty-second schedule, so a single miss can just be
 # bad timing; three in a row is the camera, not the timing.
 SNAPSHOT_FAILURES_BEFORE_UNAVAILABLE = 3
+
+# How long to refuse new stream attempts after one fails. The frontend abandons
+# an offer after about five seconds and immediately tries again, and every
+# attempt costs an allocation on Prusa's TURN server at both ends — allocations
+# the camera holds for ten minutes whether or not the stream ever worked. So the
+# retry cannot succeed and actively removes what the next attempt needs. Failing
+# instantly is both faster for the user and the only way out of the spiral.
+FAILURE_COOLDOWN = 30.0
 
 # Cameras advertise their capabilities; only some can stream.
 FEATURE_WEBRTC = "WebRtc"
@@ -80,6 +89,9 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         self._sessions: dict[str, CameraStreamSession] = {}
         self._environment: dict[str, str] | None = None
         self._snapshot_failures = 0
+        # When the last stream attempt failed, so the frontend's automatic
+        # retry can be refused instead of spending another relay slot.
+        self._failed_at: float | None = None
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
@@ -88,6 +100,22 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         image = await self._api.get_camera_snapshot(self._camera_id)
         self._async_note_snapshot(image is not None)
         return image
+
+    @callback
+    def _async_cooldown_remaining(self) -> float | None:
+        """Seconds left before another attempt is worth making, else None."""
+        if self._failed_at is None:
+            return None
+        elapsed = time.monotonic() - self._failed_at
+        if elapsed >= FAILURE_COOLDOWN:
+            self._failed_at = None
+            return None
+        return FAILURE_COOLDOWN - elapsed
+
+    @callback
+    def _async_note_failure(self) -> None:
+        """Start the cooldown after a failed attempt."""
+        self._failed_at = time.monotonic()
 
     @callback
     def _async_note_snapshot(self, ok: bool) -> None:
@@ -142,6 +170,14 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         if not self._supports_webrtc:
             raise HomeAssistantError("This camera does not support live streaming")
 
+        if (wait := self._async_cooldown_remaining()) is not None:
+            raise HomeAssistantError(
+                f"The last attempt to start this camera failed. Trying again "
+                f"straight away makes it worse — each attempt reserves a slot "
+                f"on Prusa's relay that is held for several minutes. Wait "
+                f"{wait:.0f} more seconds"
+            )
+
         environment = await self._async_environment()
         session = CameraStreamSession(
             self._api,
@@ -156,15 +192,19 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         try:
             answer_sdp = await session.start(offer_sdp)
         except SignalingError as err:
+            self._async_note_failure()
             self._sessions.pop(session_id, None)
             await session.close()
             raise HomeAssistantError(f"Could not start the camera stream: {err}") from err
         except Exception as err:
+            self._async_note_failure()
             self._sessions.pop(session_id, None)
             await session.close()
             _LOGGER.exception("Unexpected error starting camera stream")
             raise HomeAssistantError("Could not start the camera stream") from err
 
+        # A working stream means the pool was fine after all.
+        self._failed_at = None
         self._async_update_streaming_state()
         send_message(WebRTCAnswer(answer_sdp))
 

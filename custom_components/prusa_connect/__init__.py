@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import logging.handlers
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -21,6 +22,42 @@ from .coordinator import PrusaConnectJobCoordinator, PrusaConnectPrinterCoordina
 from .timelapse import TimelapseRecorder
 
 _LOGGER = logging.getLogger(__name__)
+
+# TEMPORARY diagnostic. Home Assistant here writes no log file and the add-on
+# is refused the supervisor's core-log endpoint, so a stream failure inside HA
+# leaves no trace beyond one warning — while the same code called directly
+# connects and streams. This writes what HA's own attempt does, ICE included,
+# somewhere readable. Remove once the camera stream is understood.
+_DEBUG_LOG = "prusa_connect_debug.log"
+_debug_attached = False
+
+
+def _attach_debug_log(hass: HomeAssistant) -> None:
+    """Mirror our logging, and aioice's, into a file under config/."""
+    global _debug_attached  # noqa: PLW0603 - one handler per process
+    if _debug_attached:
+        return
+    try:
+        handler = logging.handlers.RotatingFileHandler(
+            hass.config.path(_DEBUG_LOG), maxBytes=4_000_000, backupCount=1
+        )
+    except OSError as err:
+        _LOGGER.debug("Could not open the debug log: %s", err)
+        return
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    )
+    for name, level in (
+        ("custom_components.prusa_connect", logging.DEBUG),
+        ("aioice.ice", logging.INFO),
+        ("aiortc", logging.INFO),
+    ):
+        logger = logging.getLogger(name)
+        logger.addHandler(handler)
+        if logger.level == logging.NOTSET or logger.level > level:
+            logger.setLevel(level)
+    _debug_attached = True
+    _LOGGER.info("Writing a diagnostic log to %s", hass.config.path(_DEBUG_LOG))
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -51,6 +88,7 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: PrusaConnectConfigEntry
 ) -> bool:
     """Set up Prusa Connect from a config entry."""
+    _attach_debug_log(hass)
     session = async_get_clientsession(hass)
 
     async def _async_update_tokens(tokens: dict) -> None:

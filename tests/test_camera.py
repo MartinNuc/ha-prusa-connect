@@ -356,6 +356,94 @@ class TestSessionLifecycle:
         assert entity._sessions == {}
 
 
+class TestFailureCooldown:
+    """The frontend retries a failed offer within seconds, and cannot win.
+
+    Every attempt reserves a slot on Prusa's TURN server at both ends, and the
+    camera holds its slot for ten minutes whether or not the stream worked. So
+    an immediate retry removes exactly what the next attempt needs — measured
+    on the live camera as attempts alternating between "we have the relay, the
+    camera has none" and the reverse.
+    """
+
+    def _failing(self):
+        original = _Session.__init__
+
+        def failing_init(self, *args, **kwargs) -> None:
+            original(self, *args, **kwargs)
+            self.error = SignalingError("camera offline")
+
+        return original, failing_init
+
+    @pytest.mark.asyncio
+    async def test_an_immediate_retry_is_refused(self) -> None:
+        entity = make_camera()
+        original, failing = self._failing()
+        _Session.__init__ = failing
+        try:
+            with pytest.raises(HomeAssistantError):
+                await entity.async_handle_async_webrtc_offer(
+                    "v=0\r\n", "s1", lambda _m: None
+                )
+            with pytest.raises(HomeAssistantError, match="Wait"):
+                await entity.async_handle_async_webrtc_offer(
+                    "v=0\r\n", "s2", lambda _m: None
+                )
+        finally:
+            _Session.__init__ = original
+
+        assert len(_Session.instances) == 1, "the retry opened a second session"
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_says_how_long_to_wait(self) -> None:
+        entity = make_camera()
+        original, failing = self._failing()
+        _Session.__init__ = failing
+        try:
+            with pytest.raises(HomeAssistantError):
+                await entity.async_handle_async_webrtc_offer(
+                    "v=0\r\n", "s1", lambda _m: None
+                )
+            with pytest.raises(HomeAssistantError) as caught:
+                await entity.async_handle_async_webrtc_offer(
+                    "v=0\r\n", "s2", lambda _m: None
+                )
+        finally:
+            _Session.__init__ = original
+        assert "seconds" in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_the_cooldown_expires(self, monkeypatch) -> None:
+        entity = make_camera()
+        original, failing = self._failing()
+        _Session.__init__ = failing
+        try:
+            with pytest.raises(HomeAssistantError):
+                await entity.async_handle_async_webrtc_offer(
+                    "v=0\r\n", "s1", lambda _m: None
+                )
+        finally:
+            _Session.__init__ = original
+
+        entity._failed_at -= 999
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s2", lambda _m: None)
+        assert entity.is_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_a_success_clears_it(self) -> None:
+        """A working stream proves the pool was fine, whatever happened before."""
+        entity = make_camera()
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+        assert entity._async_cooldown_remaining() is None
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_refused_before_a_failure(self) -> None:
+        entity = make_camera()
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+        await entity.async_handle_async_webrtc_offer("v=0\r\n", "s2", lambda _m: None)
+        assert len(_Session.instances) == 2
+
+
 class TestStreamingState:
     """The entity state must track real viewers, not mere capability."""
 
