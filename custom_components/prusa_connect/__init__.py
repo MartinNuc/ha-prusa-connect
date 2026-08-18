@@ -53,7 +53,10 @@ def _attach_debug_log(hass: HomeAssistant) -> None:
         # between two addresses on the same TURN server is a TURN-layer
         # problem, and aioice.turn is where allocations and channel binds are
         # reported.
-        ("aioice", logging.INFO),
+        # DEBUG on aioice.turn logs every packet in and out of the relay, which
+        # is the only way to see whether our connectivity checks are actually
+        # sent and whether the camera answers them.
+        ("aioice", logging.DEBUG),
         ("aiortc", logging.INFO),
     ):
         logger = logging.getLogger(name)

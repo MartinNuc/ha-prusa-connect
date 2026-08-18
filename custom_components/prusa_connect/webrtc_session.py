@@ -217,6 +217,12 @@ class CameraStreamSession:
             if not candidate.startswith("a=candidate:") or candidate in seen:
                 continue
             seen.add(candidate)
+            # The literal string, because this is the last thing the camera is
+            # told about us and the only part of the path never observed from
+            # inside Home Assistant. If the relay address advertised here does
+            # not match the allocation actually held, the camera sends its
+            # media into nowhere and every other log line still looks healthy.
+            _LOGGER.debug("Trickling candidate: %s", candidate)
             try:
                 await self._signaling.send_candidate(candidate, MEDIA_MID)
             except Exception:  # noqa: BLE001 - one candidate is not the session
