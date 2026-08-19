@@ -17,7 +17,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api import PrusaConnectAPI
-from .const import CONF_FORCE_RELAY, DEFAULT_FORCE_RELAY
+from .const import CONF_FORCE_RELAY, DEFAULT_FORCE_RELAY, DOMAIN
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
 from .signaling import SignalingError
@@ -291,5 +291,9 @@ async def async_setup_entry(
             for camera in cameras
             if camera.get("id") is not None
         )
+
+    # TEMPORARY, for the stream diagnostic service: a direct handle on the
+    # entities so a diagnosis can run without reaching into HA internals.
+    hass.data.setdefault(DOMAIN, {}).setdefault("cameras", []).extend(entities)
 
     async_add_entities(entities)

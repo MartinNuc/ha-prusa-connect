@@ -325,6 +325,71 @@ class TestTrickle:
         assert len(signaling.candidates) == 2
 
 
+class TestTrickleOnlyAnswer:
+    """The answer must carry no candidates, as the web client's does not.
+
+    aiortc writes every gathered candidate into the answer. The camera reads
+    that list in preference to the trickled ones, so with both present it used
+    the embedded set. On a machine with one interface that set is short and
+    usable; Home Assistant offers eleven addresses the camera cannot reach, and
+    it never sent a packet. Measured alternately on the live camera: with
+    candidates, failed; without, 81 and 109 frames.
+    """
+
+    SDP = (
+        "v=0\r\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 102\r\n"
+        "a=candidate:1 1 udp 2130706431 192.168.0.216 45026 typ host\r\n"
+        "a=candidate:2 1 udp 16777215 34.159.146.76 53477 typ relay\r\n"
+        "a=ice-ufrag:LRlg\r\n"
+        "a=mid:video-stream\r\n"
+    )
+
+    def test_candidates_are_removed(self) -> None:
+        stripped = ws._strip_candidates(self.SDP)
+        assert "a=candidate:" not in stripped
+
+    def test_everything_else_survives(self) -> None:
+        stripped = ws._strip_candidates(self.SDP)
+        for line in ("m=video", "a=ice-ufrag:LRlg", "a=mid:video-stream"):
+            assert line in stripped, line
+
+    def test_line_endings_stay_crlf(self) -> None:
+        """SDP is CRLF-delimited; a stray bare newline can break a parser."""
+        stripped = ws._strip_candidates(self.SDP)
+        assert "\r\n" in stripped
+        assert "\n" not in stripped.replace("\r\n", "")
+
+    def test_an_answer_without_candidates_is_unchanged(self) -> None:
+        """Byte for byte, trailing CRLF included — SDP lines are terminated."""
+        bare = "v=0\r\nm=video 9\r\na=ice-ufrag:x\r\n"
+        assert ws._strip_candidates(bare) == bare
+
+    @pytest.mark.asyncio
+    async def test_the_answer_sent_carries_no_candidates(self) -> None:
+        """The whole fix, at the point it reaches the camera."""
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        assert signaling.answers, "no answer sent"
+        assert "a=candidate:" not in signaling.answers[0]
+        assert "ANSWER" in signaling.answers[0], "the rest of the SDP survived"
+
+    @pytest.mark.asyncio
+    async def test_the_candidates_still_go_out_separately(self) -> None:
+        """Stripping them from the answer only works because we trickle them."""
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        assert len(signaling.candidates) == 3
+
+
 class TestCandidateUfrag:
     """Every candidate the web client trickles carries its ICE ufrag.
 

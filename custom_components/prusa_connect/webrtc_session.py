@@ -141,7 +141,10 @@ class CameraStreamSession:
                 _force_relay_only(pc)
             await pc.setLocalDescription(await pc.createAnswer())
             assert self._signaling is not None
-            await self._signaling.send_answer(pc.localDescription.sdp)
+            # Trickle-only, as the web client answers. See _strip_candidates.
+            await self._signaling.send_answer(
+                _strip_candidates(pc.localDescription.sdp)
+            )
             await self._async_trickle(pc.localDescription.sdp)
 
         async def on_candidate(candidate: str, mid: str) -> None:
@@ -200,9 +203,9 @@ class CameraStreamSession:
         in ``checking`` until it times out: an offer arrives, an answer goes
         back, and nothing connects.
 
-        The candidates stay in the answer as well. The web client omits them,
-        but leaving them costs nothing and keeps the SDP self-describing for any
-        peer that does read them.
+        These are the *only* candidates the camera gets: they are stripped from
+        the answer, because leaving them there is what stopped this working.
+        See :func:`_strip_candidates`.
         """
         if self._signaling is None:
             return
@@ -368,6 +371,49 @@ _CANDIDATE_ORDER = {"relay": 0, "srflx": 1, "prflx": 2, "host": 3}
 MAX_TRICKLED_CANDIDATES = 5
 
 
+# TEMPORARY diagnostic knob.
+DIAGNOSTIC_CANDIDATE_TYPES: set[str] | None = None
+
+
+def _strip_candidates(sdp: str) -> str:
+    """Remove embedded candidates, leaving a trickle-only answer.
+
+    This is the difference between a stream that works and one that does not.
+
+    aiortc finishes gathering before ``setLocalDescription`` returns and writes
+    every candidate into the answer. The web client instead answers with none
+    at all — ``c=IN IP4 0.0.0.0``, port 9, ``a=ice-options:trickle`` — and
+    sends each candidate separately. The camera evidently reads the answer's
+    list in preference to the trickled ones, so with both present it used the
+    embedded set and ignored the rest.
+
+    That is harmless on a machine with one network interface, where the
+    embedded list is short and contains a usable address. Home Assistant runs
+    with host networking and offers eleven: a LAN address, two Docker bridges,
+    two IPv6 ULAs, two public IPv6 addresses, three reflexive ones — and the
+    relay last. The camera took those, could reach none of them, and never sent
+    a packet.
+
+    Measured alternately on the live camera, four runs::
+
+        answer with candidates    failed
+        answer without             81 frames
+        answer with candidates    failed
+        answer without            109 frames
+    """
+    kept = [
+        line
+        for line in sdp.replace("\r\n", "\n").split("\n")
+        if not line.strip().startswith("a=candidate:")
+    ]
+    return "\r\n".join(kept)
+
+
+def _candidate_type(candidate: str) -> str:
+    """The "typ" of a candidate line, or "" if it has none."""
+    return candidate.split(" typ ", 1)[1].split()[0] if " typ " in candidate else ""
+
+
 def _most_useful_first(candidates: list[str]) -> list[str]:
     """Order candidates by what a camera in another building can reach.
 
@@ -381,11 +427,19 @@ def _most_useful_first(candidates: list[str]) -> list[str]:
     Home Assistant is reachable directly, which is both faster and not capped
     to SD the way a relayed stream is.
     """
+    if DIAGNOSTIC_CANDIDATE_TYPES is not None:
+        candidates = [
+            c for c in candidates if _candidate_type(c) in DIAGNOSTIC_CANDIDATE_TYPES
+        ]
+        _LOGGER.warning(
+            "Diagnostic: sending only %s candidates (%d)",
+            sorted(DIAGNOSTIC_CANDIDATE_TYPES),
+            len(candidates),
+        )
+
     ordered = sorted(
         candidates,
-        key=lambda c: _CANDIDATE_ORDER.get(
-            c.split(" typ ", 1)[1].split()[0] if " typ " in c else "", 9
-        ),
+        key=lambda c: _CANDIDATE_ORDER.get(_candidate_type(c), 9),
     )
     if len(ordered) > MAX_TRICKLED_CANDIDATES:
         _LOGGER.debug(
