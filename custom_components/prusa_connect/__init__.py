@@ -63,8 +63,38 @@ def _attach_debug_log(hass: HomeAssistant) -> None:
         logger.addHandler(handler)
         if logger.level == logging.NOTSET or logger.level > level:
             logger.setLevel(level)
+    _log_stun_errors()
     _debug_attached = True
     _LOGGER.info("Writing a diagnostic log to %s", hass.config.path(_DEBUG_LOG))
+
+
+def _log_stun_errors() -> None:
+    """Surface STUN/TURN ERROR-CODE, which aioice never logs.
+
+    TEMPORARY, and paired with the debug log above. A TURN allocation that is
+    refused shows up in aioice only as "Class.ERROR" with no reason, so a
+    rejected credential and an exhausted quota are indistinguishable — the two
+    have been confused for a day. This wraps the parser to log the code and
+    changes nothing else; it is removed with the rest of the diagnostics.
+    """
+    try:
+        import aioice.stun as stun
+    except ImportError:  # pragma: no cover
+        return
+    if getattr(stun.parse_message, "_prusa_wrapped", False):
+        return
+
+    original = stun.parse_message
+
+    def _logging_parse(data, integrity_key=None):  # noqa: ANN001, ANN202
+        message = original(data, integrity_key)
+        error = message.attributes.get("ERROR-CODE")
+        if error:
+            _LOGGER.warning("STUN/TURN refused: %s (%s)", error, message.message_method)
+        return message
+
+    _logging_parse._prusa_wrapped = True
+    stun.parse_message = _logging_parse
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,

@@ -212,16 +212,15 @@ class CameraStreamSession:
         # describe one transport, so sending them twice just doubles the
         # signalling traffic for no gain.
         seen: set[str] = set()
+        candidates: list[str] = []
         for line in sdp.replace("\r\n", "\n").split("\n"):
             candidate = line.strip()
             if not candidate.startswith("a=candidate:") or candidate in seen:
                 continue
             seen.add(candidate)
-            # The literal string, because this is the last thing the camera is
-            # told about us and the only part of the path never observed from
-            # inside Home Assistant. If the relay address advertised here does
-            # not match the allocation actually held, the camera sends its
-            # media into nowhere and every other log line still looks healthy.
+            candidates.append(candidate)
+
+        for candidate in _most_useful_first(candidates):
             _LOGGER.debug("Trickling candidate: %s", candidate)
             try:
                 await self._signaling.send_candidate(candidate, MEDIA_MID)
@@ -327,6 +326,46 @@ class CameraStreamSession:
         self._signaling = None
         self._downstream = None
         self._upstream = None
+
+
+# What a remote camera can actually reach, best first. ICE priority ranks these
+# the other way round — host highest, relay lowest — which is right for choosing
+# between candidates but wrong for deciding what to send first.
+_CANDIDATE_ORDER = {"relay": 0, "srflx": 1, "prflx": 2, "host": 3}
+
+# The web client sends four candidates. Home Assistant, running with host
+# networking, gathers ten: a LAN address, two Docker bridges, two IPv6 ULAs, two
+# public IPv6 addresses and three reflexive ones — and aiortc emits them in ICE
+# priority order, so the relay went last.
+MAX_TRICKLED_CANDIDATES = 5
+
+
+def _most_useful_first(candidates: list[str]) -> list[str]:
+    """Order candidates by what a camera in another building can reach.
+
+    The camera is a small embedded device and appears to keep only the first
+    few candidates it is sent: with ten trickled it never sent a single packet
+    back, having discarded the relay that arrived tenth, while the web client
+    sending four connects immediately. Relay first, then reflexive, then local
+    addresses, and no more than the web client sends.
+
+    Local addresses are kept — last — because a printer on the same network as
+    Home Assistant is reachable directly, which is both faster and not capped
+    to SD the way a relayed stream is.
+    """
+    ordered = sorted(
+        candidates,
+        key=lambda c: _CANDIDATE_ORDER.get(
+            c.split(" typ ", 1)[1].split()[0] if " typ " in c else "", 9
+        ),
+    )
+    if len(ordered) > MAX_TRICKLED_CANDIDATES:
+        _LOGGER.debug(
+            "Sending %d of %d candidates; the rest are unreachable from the camera",
+            MAX_TRICKLED_CANDIDATES,
+            len(ordered),
+        )
+    return ordered[:MAX_TRICKLED_CANDIDATES]
 
 
 def _force_relay_only(pc: RTCPeerConnection) -> None:

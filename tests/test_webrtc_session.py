@@ -253,6 +253,23 @@ class TestTrickle:
         assert len(sent) == len(set(sent)) == 3, sent
 
     @pytest.mark.asyncio
+    async def test_the_relay_is_trickled_first(self) -> None:
+        """Order on the wire, not just in the helper.
+
+        The camera keeps only the first few candidates it is sent, so the relay
+        arriving last is the same as not sending it.
+        """
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        sent = [c for c, _mid in signaling.candidates]
+        assert "typ relay" in sent[0], sent
+        assert "typ srflx" in sent[1], sent
+
+    @pytest.mark.asyncio
     async def test_candidates_use_the_mid_the_camera_expects(self) -> None:
         """Observed on the wire: every candidate carries mid "video-stream"."""
         session = make_session()
@@ -306,6 +323,57 @@ class TestTrickle:
 
         assert calls["n"] == 3, "gave up after the failure"
         assert len(signaling.candidates) == 2
+
+
+class TestCandidateOrder:
+    """Ten candidates, relay last, and the camera never replied.
+
+    Home Assistant runs with host networking and gathers a LAN address, two
+    Docker bridges, two IPv6 ULAs, two public IPv6 addresses and three
+    reflexive ones. aiortc emits them in ICE priority order — host highest,
+    relay lowest — so the one address a camera in another building can reach
+    arrived tenth. The web client sends four and connects immediately.
+    """
+
+    HOST = "a=candidate:1 1 udp 2130706431 192.168.0.216 45026 typ host"
+    DOCKER = "a=candidate:2 1 udp 2130706431 172.30.32.1 41837 typ host"
+    ULA = "a=candidate:3 1 udp 2130706431 fd81:9443:439c::1 50917 typ host"
+    SRFLX = "a=candidate:4 1 udp 1694498815 94.112.176.46 45026 typ srflx raddr 0.0.0.0"
+    RELAY = "a=candidate:5 1 udp 16777215 34.159.146.76 53477 typ relay raddr 0.0.0.0"
+
+    def test_the_relay_goes_first(self) -> None:
+        ordered = ws._most_useful_first([self.HOST, self.DOCKER, self.SRFLX, self.RELAY])
+        assert ordered[0] == self.RELAY
+
+    def test_reflexive_beats_local(self) -> None:
+        ordered = ws._most_useful_first([self.HOST, self.SRFLX])
+        assert ordered == [self.SRFLX, self.HOST]
+
+    def test_local_addresses_are_kept(self) -> None:
+        """A printer on the same network is reachable directly, and better so."""
+        ordered = ws._most_useful_first([self.HOST, self.RELAY])
+        assert self.HOST in ordered
+
+    def test_capped_to_what_the_web_client_sends(self) -> None:
+        many = [self.RELAY, self.SRFLX, self.HOST, self.DOCKER, self.ULA,
+                self.HOST + " x", self.DOCKER + " y", self.ULA + " z"]
+        ordered = ws._most_useful_first(many)
+        assert len(ordered) == ws.MAX_TRICKLED_CANDIDATES
+
+    def test_the_cap_never_drops_the_relay(self) -> None:
+        """The whole point: truncation must not lose the one that works."""
+        many = [self.HOST + f" {i}" for i in range(20)] + [self.RELAY]
+        ordered = ws._most_useful_first(many)
+        assert self.RELAY in ordered
+        assert ordered[0] == self.RELAY
+
+    def test_a_short_list_is_untouched(self) -> None:
+        assert ws._most_useful_first([self.RELAY]) == [self.RELAY]
+
+    def test_an_unparseable_candidate_sorts_last_without_raising(self) -> None:
+        odd = "a=candidate:9 1 udp 1 1.2.3.4 1"
+        ordered = ws._most_useful_first([odd, self.RELAY])
+        assert ordered[0] == self.RELAY
 
 
 class TestRelayOnly:
