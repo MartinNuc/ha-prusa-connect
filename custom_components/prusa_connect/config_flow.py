@@ -27,8 +27,6 @@ from .auth import (
     decode_id_token,
 )
 from .const import (
-    CONF_FORCE_RELAY,
-    DEFAULT_FORCE_RELAY,
     CONF_ACCESS_TOKEN,
     CONF_REFRESH_TOKEN,
     CONF_TIMELAPSE,
@@ -46,7 +44,7 @@ class PrusaConnectOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Timelapse recording, and how the camera stream reaches the camera."""
+        """Let the user turn timelapse recording on or off."""
         if user_input is not None:
             return self.async_create_entry(data=user_input)
 
@@ -58,12 +56,6 @@ class PrusaConnectOptionsFlow(OptionsFlow):
                         CONF_TIMELAPSE,
                         default=self.config_entry.options.get(
                             CONF_TIMELAPSE, DEFAULT_TIMELAPSE
-                        ),
-                    ): bool,
-                    vol.Required(
-                        CONF_FORCE_RELAY,
-                        default=self.config_entry.options.get(
-                            CONF_FORCE_RELAY, DEFAULT_FORCE_RELAY
                         ),
                     ): bool,
                 }

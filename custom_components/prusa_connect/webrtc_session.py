@@ -59,7 +59,6 @@ class CameraStreamSession:
         camera_token: str,
         access_token: str,
         on_closed: Callable[[], None] | None = None,
-        relay_only: bool = False,
     ) -> None:
         """Initialize the session. Nothing is opened until :meth:`start`.
 
@@ -73,7 +72,6 @@ class CameraStreamSession:
         self._camera_token = camera_token
         self._access_token = access_token
         self._on_closed = on_closed
-        self._relay_only = relay_only
 
         self._signaling: PrusaCameraSignaling | None = None
         self._upstream: RTCPeerConnection | None = None
@@ -134,11 +132,6 @@ class CameraStreamSession:
 
         async def on_offer(sdp: str) -> None:
             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
-            if self._relay_only:
-                # Between the remote description (which creates the transports)
-                # and the local one (which gathers), the only window in which
-                # the policy can be set.
-                _force_relay_only(pc)
             await pc.setLocalDescription(await pc.createAnswer())
             assert self._signaling is not None
             # Trickle-only, as the web client answers. See _strip_candidates.
@@ -371,10 +364,6 @@ _CANDIDATE_ORDER = {"relay": 0, "srflx": 1, "prflx": 2, "host": 3}
 MAX_TRICKLED_CANDIDATES = 5
 
 
-# TEMPORARY diagnostic knob.
-DIAGNOSTIC_CANDIDATE_TYPES: set[str] | None = None
-
-
 def _strip_candidates(sdp: str) -> str:
     """Remove embedded candidates, leaving a trickle-only answer.
 
@@ -427,16 +416,6 @@ def _most_useful_first(candidates: list[str]) -> list[str]:
     Home Assistant is reachable directly, which is both faster and not capped
     to SD the way a relayed stream is.
     """
-    if DIAGNOSTIC_CANDIDATE_TYPES is not None:
-        candidates = [
-            c for c in candidates if _candidate_type(c) in DIAGNOSTIC_CANDIDATE_TYPES
-        ]
-        _LOGGER.warning(
-            "Diagnostic: sending only %s candidates (%d)",
-            sorted(DIAGNOSTIC_CANDIDATE_TYPES),
-            len(candidates),
-        )
-
     ordered = sorted(
         candidates,
         key=lambda c: _CANDIDATE_ORDER.get(_candidate_type(c), 9),
@@ -450,59 +429,6 @@ def _most_useful_first(candidates: list[str]) -> list[str]:
     return ordered[:MAX_TRICKLED_CANDIDATES]
 
 
-def _force_relay_only(pc: RTCPeerConnection) -> None:
-    """Restrict this connection to its TURN relay, ignoring local addresses.
-
-    Home Assistant runs with host networking and so offers every address the
-    machine has — a LAN address plus two Docker bridges — where a single
-    interface is enough. On the same camera, minutes apart, the same code
-    connected from a one-interface container and failed from Home Assistant
-    with every pair unanswered, including relay to relay. Offering only the
-    relay reduces eight candidate pairs to the one that is known to work.
-
-    aiortc has no setting for this, though the ICE layer beneath it does, so
-    the policy is set directly on the connection objects. That is private API
-    and deliberately narrow: it touches only the peer connection we created,
-    unlike patching aiortc's module-level factories, which would change
-    behaviour for anything else in the process. If the internals move, the
-    attribute is simply absent and the stream falls back to trying everything.
-    """
-    try:
-        from aioice.ice import TransportPolicy
-    except ImportError:  # pragma: no cover - aioice ships with aiortc
-        _LOGGER.debug("Cannot force relay-only: aioice layout not as expected")
-        return
-
-    applied = 0
-    for transport in _ice_transports(pc):
-        connection = getattr(getattr(transport, "iceGatherer", None), "_connection", None)
-        if connection is None or not hasattr(connection, "_transport_policy"):
-            continue
-        connection._transport_policy = TransportPolicy.RELAY  # noqa: SLF001
-        applied += 1
-
-    if applied:
-        _LOGGER.debug("Restricted %d ICE transport(s) to relay only", applied)
-    else:
-        _LOGGER.warning(
-            "Could not restrict the camera stream to a relay; aiortc's internals "
-            "have changed. The stream will try every local address instead"
-        )
-
-
-def _ice_transports(pc: RTCPeerConnection) -> list:
-    """Every ICE transport behind a peer connection, without assuming shape."""
-    found = []
-    senders_receivers = [t.receiver for t in pc.getTransceivers()]
-    senders_receivers += [t.sender for t in pc.getTransceivers()]
-    if pc.sctp is not None:
-        senders_receivers.append(pc.sctp)
-    for holder in senders_receivers:
-        dtls = getattr(holder, "transport", None)
-        ice = getattr(dtls, "transport", None)
-        if ice is not None and ice not in found:
-            found.append(ice)
-    return found
 
 
 def _candidate_types(sdp: str) -> str:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
-import logging.handlers
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -23,78 +22,8 @@ from .timelapse import TimelapseRecorder
 
 _LOGGER = logging.getLogger(__name__)
 
-# TEMPORARY diagnostic. Home Assistant here writes no log file and the add-on
-# is refused the supervisor's core-log endpoint, so a stream failure inside HA
-# leaves no trace beyond one warning — while the same code called directly
-# connects and streams. This writes what HA's own attempt does, ICE included,
-# somewhere readable. Remove once the camera stream is understood.
-_DEBUG_LOG = "prusa_connect_debug.log"
-_debug_attached = False
 
 
-def _attach_debug_log(hass: HomeAssistant) -> None:
-    """Mirror our logging, and aioice's, into a file under config/."""
-    global _debug_attached  # noqa: PLW0603 - one handler per process
-    if _debug_attached:
-        return
-    try:
-        handler = logging.handlers.RotatingFileHandler(
-            hass.config.path(_DEBUG_LOG), maxBytes=4_000_000, backupCount=1
-        )
-    except OSError as err:
-        _LOGGER.debug("Could not open the debug log: %s", err)
-        return
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
-    )
-    for name, level in (
-        ("custom_components.prusa_connect", logging.DEBUG),
-        # The whole of aioice, not just ice: a relay-to-relay pair failing
-        # between two addresses on the same TURN server is a TURN-layer
-        # problem, and aioice.turn is where allocations and channel binds are
-        # reported.
-        # DEBUG on aioice.turn logs every packet in and out of the relay, which
-        # is the only way to see whether our connectivity checks are actually
-        # sent and whether the camera answers them.
-        ("aioice", logging.DEBUG),
-        ("aiortc", logging.INFO),
-    ):
-        logger = logging.getLogger(name)
-        logger.addHandler(handler)
-        if logger.level == logging.NOTSET or logger.level > level:
-            logger.setLevel(level)
-    _log_stun_errors()
-    _debug_attached = True
-    _LOGGER.info("Writing a diagnostic log to %s", hass.config.path(_DEBUG_LOG))
-
-
-def _log_stun_errors() -> None:
-    """Surface STUN/TURN ERROR-CODE, which aioice never logs.
-
-    TEMPORARY, and paired with the debug log above. A TURN allocation that is
-    refused shows up in aioice only as "Class.ERROR" with no reason, so a
-    rejected credential and an exhausted quota are indistinguishable — the two
-    have been confused for a day. This wraps the parser to log the code and
-    changes nothing else; it is removed with the rest of the diagnostics.
-    """
-    try:
-        import aioice.stun as stun
-    except ImportError:  # pragma: no cover
-        return
-    if getattr(stun.parse_message, "_prusa_wrapped", False):
-        return
-
-    original = stun.parse_message
-
-    def _logging_parse(data, integrity_key=None):  # noqa: ANN001, ANN202
-        message = original(data, integrity_key)
-        error = message.attributes.get("ERROR-CODE")
-        if error:
-            _LOGGER.warning("STUN/TURN refused: %s (%s)", error, message.message_method)
-        return message
-
-    _logging_parse._prusa_wrapped = True
-    stun.parse_message = _logging_parse
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -125,7 +54,6 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: PrusaConnectConfigEntry
 ) -> bool:
     """Set up Prusa Connect from a config entry."""
-    _attach_debug_log(hass)
     session = async_get_clientsession(hass)
 
     async def _async_update_tokens(tokens: dict) -> None:
