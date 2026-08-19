@@ -57,6 +57,12 @@ DEFAULT_TIMELAPSE: Final = False
 # THIRTY_SEC trigger scheme. Sampling faster only re-fetches the same JPEG
 # unless the camera is poked with a `get_snapshot` trigger, which costs upload
 # bandwidth wherever the printer lives — so match its own cadence.
+# Keep recording for a while after the print ends. The last frame otherwise
+# catches the model mid-layer with the head over it, when the finished object
+# is the shot worth having — and the bed cooling and the head parking are the
+# natural closing beat of a timelapse.
+TIMELAPSE_TAIL: Final = 60
+
 TIMELAPSE_INTERVAL: Final = 30  # seconds
 
 # 10 fps turns a 5-hour print into a minute of video.

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import hashlib
 import logging
+import time
 from pathlib import Path
 import re
 import shutil
@@ -28,6 +29,7 @@ from homeassistant.util import dt as dt_util
 from .api import PrusaConnectAPI
 from .const import (
     TIMELAPSE_FPS,
+    TIMELAPSE_TAIL,
     TIMELAPSE_INTERVAL,
     TIMELAPSE_MAX_FRAMES,
     TIMELAPSE_MEDIA_DIR,
@@ -90,6 +92,9 @@ class TimelapseSession:
     job_name: str | None = None
     frames: int = 0
     misses: int = 0
+    # When the print ended and the tail began, as a monotonic deadline. None
+    # while the print is still running.
+    finish_after: float | None = None
     digests: set[str] = field(default_factory=set)
 
     @property
@@ -147,6 +152,57 @@ class TimelapseRecorder:
             self._handle_coordinator_update
         )
         self._handle_coordinator_update()
+        self.hass.async_create_task(self._async_recover_orphans())
+
+    async def _async_recover_orphans(self) -> None:
+        """Encode frames left behind by a session that never finished.
+
+        A restart or a crash mid-print leaves its frames on disk with no video:
+        the session lives in memory only, so nothing knows to finish it. Nine
+        hours of one print were lost that way before this existed.
+
+        Directories belonging to sessions running now are left alone; every
+        other one is encoded on its own, which is the honest outcome — a print
+        interrupted by a restart genuinely is two recordings, and half a video
+        beats none.
+        """
+        active = {session.frame_dir for session in self._sessions.values()}
+        root = Path(self.hass.config.path(TIMELAPSE_WORK_DIR))
+
+        try:
+            orphans = await self.hass.async_add_executor_job(_find_sessions, root)
+        except OSError as err:
+            _LOGGER.debug("Could not scan for unfinished timelapses: %s", err)
+            return
+
+        for frame_dir in orphans:
+            if frame_dir in active:
+                continue
+            frames = await self.hass.async_add_executor_job(_count_frames, frame_dir)
+            if frames < 2:
+                _LOGGER.debug("Discarding %s: %d frame(s)", frame_dir.name, frames)
+                await self.hass.async_add_executor_job(_remove_dir, frame_dir)
+                continue
+
+            _LOGGER.info(
+                "Found %d frames from an unfinished timelapse (%s); encoding them",
+                frames,
+                frame_dir.name,
+            )
+            session = TimelapseSession(
+                printer_uuid=frame_dir.parent.name,
+                camera_id=0,
+                printer_name="",
+                started=_started_from_name(frame_dir.name),
+                frame_dir=frame_dir,
+                job_name="interrupted",
+                frames=frames,
+            )
+            self._sessions[frame_dir.parent.name + ":recovered"] = session
+            try:
+                await self._async_finish(frame_dir.parent.name + ":recovered")
+            except Exception:  # noqa: BLE001 - one bad recovery is not the rest
+                _LOGGER.exception("Could not recover %s", frame_dir.name)
 
     async def async_stop(self) -> None:
         """Stop recording, finishing any video in progress.
@@ -171,8 +227,22 @@ class TimelapseRecorder:
 
             if state in RECORDING_STATES and not recording:
                 self._async_begin(printer_uuid, printer)
+            elif recording and state in RECORDING_STATES:
+                # Printing again: either the print never really stopped or a
+                # state blip ended the tail early. Either way, carry on.
+                session = self._sessions[printer_uuid]
+                if session.finish_after is not None:
+                    _LOGGER.debug("Printing resumed; cancelling the tail")
+                    session.finish_after = None
             elif recording and state in FINISHED_STATES:
-                self.hass.async_create_task(self._async_finish(printer_uuid))
+                session = self._sessions[printer_uuid]
+                if session.finish_after is None:
+                    session.finish_after = time.monotonic() + TIMELAPSE_TAIL
+                    _LOGGER.info(
+                        "%s finished; recording for another %d seconds",
+                        session.label,
+                        TIMELAPSE_TAIL,
+                    )
 
     @callback
     def _async_begin(self, printer_uuid: str, printer: dict) -> None:
@@ -262,6 +332,13 @@ class TimelapseRecorder:
         try:
             for printer_uuid in list(self._sessions):
                 await self._async_capture(printer_uuid)
+
+            # After capturing, not before: the whole point of the tail is that
+            # its last frames make it into the video.
+            now = time.monotonic()
+            for printer_uuid, session in list(self._sessions.items()):
+                if session.finish_after is not None and now >= session.finish_after:
+                    await self._async_finish(printer_uuid)
         finally:
             self._capturing = False
 
@@ -438,6 +515,32 @@ def _write_frame(path: Path, image: bytes) -> None:
 def _ensure_dir(path: Path) -> None:
     """Create a directory if it is not already there."""
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _find_sessions(root: Path) -> list[Path]:
+    """Every session directory under the working root."""
+    if not root.is_dir():
+        return []
+    return sorted(
+        child
+        for printer_dir in root.iterdir()
+        if printer_dir.is_dir()
+        for child in printer_dir.iterdir()
+        if child.is_dir()
+    )
+
+
+def _count_frames(path: Path) -> int:
+    """How many frames a session directory holds."""
+    return sum(1 for entry in path.iterdir() if entry.suffix == ".jpg")
+
+
+def _started_from_name(name: str) -> datetime:
+    """Recover a session's start time from its directory name."""
+    try:
+        return datetime.strptime(name, "%Y%m%d-%H%M%S")
+    except ValueError:
+        return dt_util.now()
 
 
 def _remove_dir(path: Path) -> None:

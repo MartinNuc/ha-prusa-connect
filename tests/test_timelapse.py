@@ -147,6 +147,21 @@ def setup(tmp_path, monkeypatch):
     return build
 
 
+async def _end_print(recorder, hass, coordinator, state=PrinterState.FINISHED):
+    """Finish a print and let the tail expire.
+
+    Recording continues for a minute after the printer stops, so a test that
+    wants the finished video has to run that out rather than assume the video
+    appears the moment the state changes.
+    """
+    coordinator.set_state(state)
+    session = recorder._sessions.get(PRINTER)
+    if session is not None:
+        session.finish_after = 0.0
+    await recorder._async_capture_all()
+    await hass.drain()
+
+
 class TestFilenames:
     """Job names reach the filesystem, so they have to be tamed."""
 
@@ -190,8 +205,7 @@ class TestSessionLifecycle:
         for _ in range(3):
             await recorder._async_capture_all()
 
-        coordinator.set_state(PrinterState.FINISHED)
-        await hass.drain()
+        await _end_print(recorder, hass, coordinator)
 
         assert recorder._sessions == {}
         assert len(setup.encoded) == 1
@@ -211,8 +225,7 @@ class TestSessionLifecycle:
         for _ in range(3):
             await recorder._async_capture_all()
 
-        coordinator.set_state(PrinterState.ERROR)
-        await hass.drain()
+        await _end_print(recorder, hass, coordinator, PrinterState.ERROR)
         assert len(setup.encoded) == 1
 
     @pytest.mark.asyncio
@@ -228,8 +241,7 @@ class TestSessionLifecycle:
         coordinator.set_state(PrinterState.PRINTING)
         assert recorder._cancel_timer is not None
 
-        coordinator.set_state(PrinterState.FINISHED)
-        await hass.drain()
+        await _end_print(recorder, hass, coordinator, PrinterState.FINISHED)
         assert recorder._cancel_timer is None
 
 
@@ -322,6 +334,148 @@ class TestCapture:
         await recorder._async_capture_all()
         await hass.drain()
         assert recorder._sessions == {}
+
+
+class TestRecoveringOrphans:
+    """Frames left by a session that never finished.
+
+    A restart mid-print leaves them on disk with no video: the session lives in
+    memory only, so nothing knows to finish it. Nine hours of one print were
+    lost that way.
+    """
+
+    def _orphan(self, tmp_path, name="20260818-134851", frames=5):
+        d = tmp_path / ".prusa_connect_timelapse" / PRINTER / name
+        d.mkdir(parents=True)
+        for i in range(1, frames + 1):
+            (d / f"frame_{i:06d}.jpg").write_bytes(b"x")
+        return d
+
+    @pytest.mark.asyncio
+    async def test_leftover_frames_are_encoded(self, setup, tmp_path) -> None:
+        orphan = self._orphan(tmp_path)
+        recorder, hass, _ = setup()
+        await recorder._async_recover_orphans()
+        await hass.drain()
+
+        assert len(setup.encoded) == 1
+        assert not orphan.exists(), "frames kept after a successful encode"
+
+    @pytest.mark.asyncio
+    async def test_the_video_is_named_for_when_it_started(self, setup, tmp_path) -> None:
+        self._orphan(tmp_path, name="20260818-134851")
+        recorder, hass, _ = setup()
+        await recorder._async_recover_orphans()
+        await hass.drain()
+
+        _session, output = setup.encoded[0]
+        assert output.name.startswith("20260818-134851"), output.name
+
+    @pytest.mark.asyncio
+    async def test_a_directory_too_small_to_film_is_discarded(self, setup, tmp_path) -> None:
+        orphan = self._orphan(tmp_path, frames=1)
+        recorder, hass, _ = setup()
+        await recorder._async_recover_orphans()
+        await hass.drain()
+
+        assert setup.encoded == []
+        assert not orphan.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_running_session_is_left_alone(self, setup, tmp_path) -> None:
+        """Recovering the directory being written to would cut a print short."""
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(PrinterState.PRINTING)
+        await recorder._async_capture_all()
+        live = recorder._sessions[PRINTER].frame_dir
+
+        await recorder._async_recover_orphans()
+        await hass.drain()
+
+        assert PRINTER in recorder._sessions, "the live session was finished"
+        assert live.exists()
+
+    @pytest.mark.asyncio
+    async def test_several_orphans_are_each_recovered(self, setup, tmp_path) -> None:
+        self._orphan(tmp_path, name="20260818-123608")
+        self._orphan(tmp_path, name="20260818-134851")
+        recorder, hass, _ = setup()
+        await recorder._async_recover_orphans()
+        await hass.drain()
+
+        assert len(setup.encoded) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_work_directory_is_harmless(self, setup, tmp_path) -> None:
+        recorder, hass, _ = setup()
+        await recorder._async_recover_orphans()
+        assert setup.encoded == []
+
+
+class TestTail:
+    """Recording continues briefly after the print ends.
+
+    The last frame otherwise catches the model mid-layer with the head over it,
+    when the finished object is the shot worth having.
+    """
+
+    @pytest.mark.asyncio
+    async def test_finishing_does_not_end_it_immediately(self, setup) -> None:
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(PrinterState.PRINTING)
+        await recorder._async_capture_all()
+
+        coordinator.set_state(PrinterState.FINISHED)
+        await hass.drain()
+
+        assert PRINTER in recorder._sessions, "stopped recording too early"
+        assert setup.encoded == []
+
+    @pytest.mark.asyncio
+    async def test_frames_are_still_captured_during_the_tail(self, setup) -> None:
+        recorder, hass, coordinator = setup(api=_Api([b"a", b"b", b"c", b"d"]))
+        coordinator.set_state(PrinterState.PRINTING)
+        await recorder._async_capture_all()
+        coordinator.set_state(PrinterState.FINISHED)
+        await hass.drain()
+
+        await recorder._async_capture_all()
+        assert recorder._sessions[PRINTER].frames == 2, "the tail captured nothing"
+
+    @pytest.mark.asyncio
+    async def test_the_video_is_made_once_the_tail_runs_out(self, setup) -> None:
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(PrinterState.PRINTING)
+        await recorder._async_capture_all()
+
+        await _end_print(recorder, hass, coordinator)
+        assert len(setup.encoded) == 1
+        assert recorder._sessions == {}
+
+    @pytest.mark.asyncio
+    async def test_printing_again_cancels_the_tail(self, setup) -> None:
+        """A brief state blip must not cut the recording in two."""
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(PrinterState.PRINTING)
+        coordinator.set_state(PrinterState.FINISHED)
+        await hass.drain()
+        assert recorder._sessions[PRINTER].finish_after is not None
+
+        coordinator.set_state(PrinterState.PRINTING)
+        assert recorder._sessions[PRINTER].finish_after is None
+        assert setup.encoded == []
+
+    @pytest.mark.asyncio
+    async def test_unloading_does_not_wait_for_the_tail(self, setup) -> None:
+        """Shutting down should still yield the video, not abandon it."""
+        recorder, hass, coordinator = setup()
+        coordinator.set_state(PrinterState.PRINTING)
+        for _ in range(2):
+            await recorder._async_capture_all()
+        await _end_print(recorder, hass, coordinator, PrinterState.FINISHED)
+
+        await recorder.async_stop()
+        assert len(setup.encoded) == 1
 
 
 class TestNaming:
@@ -434,8 +588,7 @@ class TestOutput:
         )
         for _ in range(3):
             await recorder._async_capture_all()
-        coordinator.set_state(PrinterState.FINISHED)
-        await hass.drain()
+        await _end_print(recorder, hass, coordinator, PrinterState.FINISHED)
 
         _, output = setup.encoded[0]
         assert output.parent == Path(hass.config.media_dirs["local"]) / "prusa_connect"
@@ -449,8 +602,7 @@ class TestOutput:
             await recorder._async_capture_all()
         frame_dir = recorder._sessions[PRINTER].frame_dir
 
-        coordinator.set_state(PrinterState.FINISHED)
-        await hass.drain()
+        await _end_print(recorder, hass, coordinator, PrinterState.FINISHED)
         assert not frame_dir.exists()
 
     @pytest.mark.asyncio
@@ -469,8 +621,7 @@ class TestOutput:
         frame_dir = recorder._sessions[PRINTER].frame_dir
 
         monkeypatch.setattr(TimelapseRecorder, "_async_encode", boom)
-        coordinator.set_state(PrinterState.FINISHED)
-        await hass.drain()
+        await _end_print(recorder, hass, coordinator, PrinterState.FINISHED)
 
         assert frame_dir.exists()
         assert len(list(frame_dir.iterdir())) == 3
@@ -483,8 +634,7 @@ class TestOutput:
         await recorder._async_capture_all()
         frame_dir = recorder._sessions[PRINTER].frame_dir
 
-        coordinator.set_state(PrinterState.FINISHED)
-        await hass.drain()
+        await _end_print(recorder, hass, coordinator, PrinterState.FINISHED)
 
         assert setup.encoded == []
         assert not frame_dir.exists()

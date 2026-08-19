@@ -206,7 +206,7 @@
           "timelapse": "Record a timelapse of each print"
         },
         "data_description": {
-          "timelapse": "Saves a snapshot every 30 seconds while printing, then builds a video when the print ends. Videos appear in Media → prusa_connect (/media/prusa_connect), named after the print, for example 20260815-143000_Benchy.gcode.mp4. Frames are held in .prusa_connect_timelapse while the print runs and use a few hundred megabytes; they are deleted once the video is made."
+          "timelapse": "Saves a snapshot every 30 seconds while printing and for a minute after it finishes, then builds a video. Videos appear in Media → prusa_connect (/media/prusa_connect), named after the print, for example 20260815-143000_Benchy.gcode.mp4. Frames are held in .prusa_connect_timelapse while the print runs and use a few hundred megabytes; they are deleted once the video is made. If Home Assistant restarts mid-print, the frames left behind are encoded on the next start rather than discarded."
         }
       }
     }
