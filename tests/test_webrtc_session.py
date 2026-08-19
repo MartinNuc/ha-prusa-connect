@@ -325,6 +325,48 @@ class TestTrickle:
         assert len(signaling.candidates) == 2
 
 
+class TestCandidateUfrag:
+    """Every candidate the web client trickles carries its ICE ufrag.
+
+    aiortc omits it. Legal — the field exists so a peer can tell which ICE
+    session a candidate belongs to across a restart — but the camera appears to
+    require it: without it our candidates were acknowledged and then discarded,
+    and the camera never sent a packet.
+    """
+
+    CAND = "a=candidate:1 1 udp 16777215 34.159.146.76 52024 typ relay raddr 0.0.0.0"
+
+    def test_reads_the_ufrag_from_the_answer(self) -> None:
+        assert ws._ice_ufrag("v=0\r\na=ice-ufrag:LRlg\r\na=ice-pwd:x\r\n") == "LRlg"
+
+    def test_no_ufrag_in_the_sdp_yields_none(self) -> None:
+        assert ws._ice_ufrag("v=0\r\nm=video 9\r\n") is None
+
+    def test_appends_the_ufrag(self) -> None:
+        assert ws._with_ufrag(self.CAND, "LRlg").endswith("generation 0 ufrag LRlg")
+
+    def test_leaves_a_candidate_that_already_has_one(self) -> None:
+        already = f"{self.CAND} generation 0 ufrag abcd"
+        assert ws._with_ufrag(already, "LRlg") == already
+
+    def test_without_a_ufrag_the_candidate_is_unchanged(self) -> None:
+        """Better to send it plain than to append a malformed tag."""
+        assert ws._with_ufrag(self.CAND, None) == self.CAND
+
+    @pytest.mark.asyncio
+    async def test_the_ufrag_reaches_the_wire(self) -> None:
+        session = make_session()
+        asyncio.ensure_future(session.start("v=0\r\nOFFER\r\n"))
+        await asyncio.sleep(0)
+        signaling = _FakeSignaling.instances[0]
+        await signaling.on_offer("v=0\r\nCAMERA OFFER\r\n")
+
+        sent = [c for c, _mid in signaling.candidates]
+        assert sent, "nothing trickled"
+        for candidate in sent:
+            assert " ufrag abcd" in candidate, candidate
+
+
 class TestCandidateOrder:
     """Ten candidates, relay last, and the camera never replied.
 

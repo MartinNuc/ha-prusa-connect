@@ -220,7 +220,9 @@ class CameraStreamSession:
             seen.add(candidate)
             candidates.append(candidate)
 
+        ufrag = _ice_ufrag(sdp)
         for candidate in _most_useful_first(candidates):
+            candidate = _with_ufrag(candidate, ufrag)
             _LOGGER.debug("Trickling candidate: %s", candidate)
             try:
                 await self._signaling.send_candidate(candidate, MEDIA_MID)
@@ -326,6 +328,32 @@ class CameraStreamSession:
         self._signaling = None
         self._downstream = None
         self._upstream = None
+
+
+def _ice_ufrag(sdp: str) -> str | None:
+    """The ICE username fragment this answer negotiated."""
+    for line in sdp.replace("\r\n", "\n").split("\n"):
+        if line.startswith("a=ice-ufrag:"):
+            return line.split(":", 1)[1].strip() or None
+    return None
+
+
+def _with_ufrag(candidate: str, ufrag: str | None) -> str:
+    """Tag a candidate with the ICE ufrag it belongs to.
+
+    Every candidate the web client trickles carries one::
+
+        a=candidate:... typ relay raddr ... rport ... generation 0 ufrag f7qX
+
+    aiortc omits it, which is legal — the field exists so a peer can tell which
+    ICE session a candidate belongs to when a restart is in flight — but the
+    camera appears to require it. Without it our candidates were acknowledged
+    and then evidently discarded: the camera negotiated normally and never sent
+    a single packet, having learned no address to send to.
+    """
+    if not ufrag or " ufrag " in candidate:
+        return candidate
+    return f"{candidate} generation 0 ufrag {ufrag}"
 
 
 # What a remote camera can actually reach, best first. ICE priority ranks these
