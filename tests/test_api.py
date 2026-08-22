@@ -192,3 +192,99 @@ def test_binary_fetch_returns_none_on_error():
     """A missing snapshot yields None rather than raising."""
     session = _Session(_Response(status=404))
     assert asyncio.run(_api(session).get_camera_snapshot(1)) is None
+
+
+# --- Camera WebRTC configuration ---------------------------------------------
+
+WEBRTC_URL = "https://camera-service-api.prusa3d.com/v1/camera-webrtc-config"
+
+_TURN_SERVER = {
+    "urls": [
+        "turns:coturn.prusa3d.com:5349",
+        "turn:coturn.prusa3d.com:3478?transport=udp",
+    ],
+    "username": "1700000000:000000",
+    "credential": "EXAMPLETURNCREDENTIALAAAAAA=",
+}
+_STUN_SERVER = {
+    "urls": [f"stun:stun{n}.l.google.com:3478" for n in range(1, 10)]
+}
+
+
+def test_webrtc_config_trims_stun_and_keeps_turn():
+    """The camera is embedded; the web app never sends it more than two STUN URLs."""
+    session = _Session(
+        _Response(
+            payload={
+                "configuration": {
+                    "iceServers": [_STUN_SERVER, _TURN_SERVER],
+                    "iceTransportPolicy": "all",
+                },
+                "ttl": 300,
+            }
+        )
+    )
+    config = asyncio.run(_api(session).get_webrtc_config(WEBRTC_URL))
+
+    assert config["ttl"] == 300
+    assert config["policy"] == "all"
+    assert len(config["ice_servers"]) == 2
+    assert config["ice_servers"][0]["username"] == "1700000000:000000"
+    assert len(config["ice_servers"][1]["urls"]) == 2
+
+
+def test_webrtc_config_without_turn_demands_reauth():
+    """A STUN-only response means the token predates the 'connect' scope.
+
+    Without this the camera would simply never connect, giving the user no
+    indication that reauthenticating is what fixes it.
+    """
+    from homeassistant.exceptions import ConfigEntryAuthFailed
+
+    session = _Session(
+        _Response(payload={"configuration": {"iceServers": [_STUN_SERVER]}, "ttl": 300})
+    )
+    with pytest.raises(ConfigEntryAuthFailed, match="reauthenticate"):
+        asyncio.run(_api(session).get_webrtc_config(WEBRTC_URL))
+
+
+def test_webrtc_config_sends_bearer_token():
+    session = _Session(
+        _Response(payload={"configuration": {"iceServers": [_TURN_SERVER]}, "ttl": 300})
+    )
+    asyncio.run(_api(session).get_webrtc_config(WEBRTC_URL))
+    assert session.calls[0]["headers"]["Authorization"] == "Bearer ACCESS"
+
+
+def test_environment_is_parsed_from_javascript():
+    """Camera hosts are published in a runtime document, not fixed in code."""
+    body = (
+        "window.CAMERA_SIGNALING_SERVER = 'signal.example.com'\n"
+        "window.CAMERA_WEBRTC_CONFIG_URL = 'https://cfg.example.com/v1/x'\n"
+        "window.MAINTENANCE_MODE = ''\n"
+        "const global = window\n"
+    )
+    session = _Session(_Response(body=body.encode()))
+    session.responses[0].text = lambda: _text(body)
+
+    env = asyncio.run(_api(session).get_environment())
+    assert env["CAMERA_SIGNALING_SERVER"] == "signal.example.com"
+    assert env["CAMERA_WEBRTC_CONFIG_URL"] == "https://cfg.example.com/v1/x"
+
+
+async def _text(value):
+    return value
+
+
+def test_environment_falls_back_to_defaults_when_empty():
+    """Blank values must not override the known-good defaults."""
+    from custom_components.prusa_connect.const import ENVIRONMENT_DEFAULTS
+
+    body = "window.CAMERA_SIGNALING_SERVER = ''\n"
+    session = _Session(_Response())
+    session.responses[0].text = lambda: _text(body)
+
+    env = asyncio.run(_api(session).get_environment())
+    assert env["CAMERA_SIGNALING_SERVER"] == (
+        ENVIRONMENT_DEFAULTS["CAMERA_SIGNALING_SERVER"]
+    )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -11,10 +11,19 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import PrusaConnectAPI
-from .const import CONF_ACCESS_TOKEN, CONF_REFRESH_TOKEN
+from .const import (
+    CONF_ACCESS_TOKEN,
+    CONF_REFRESH_TOKEN,
+    CONF_TIMELAPSE,
+    DEFAULT_TIMELAPSE,
+)
 from .coordinator import PrusaConnectJobCoordinator, PrusaConnectPrinterCoordinator
+from .timelapse import TimelapseRecorder
 
 _LOGGER = logging.getLogger(__name__)
+
+
+
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -32,6 +41,10 @@ class PrusaConnectData:
     api: PrusaConnectAPI
     printer_coordinator: PrusaConnectPrinterCoordinator
     job_coordinator: PrusaConnectJobCoordinator
+    timelapse: TimelapseRecorder | None = None
+    # The options this entry was set up with, so an update listener can tell an
+    # options change from a token being written back to the same entry.
+    options: dict = field(default_factory=dict)
 
 
 type PrusaConnectConfigEntry = ConfigEntry[PrusaConnectData]
@@ -71,7 +84,15 @@ async def async_setup_entry(
         api=api,
         printer_coordinator=printer_coordinator,
         job_coordinator=job_coordinator,
+        options=dict(entry.options),
     )
+
+    if entry.options.get(CONF_TIMELAPSE, DEFAULT_TIMELAPSE):
+        entry.runtime_data.timelapse = await _async_setup_timelapse(
+            hass, api, printer_coordinator, job_coordinator
+        )
+
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -82,8 +103,65 @@ async def async_setup_entry(
     return True
 
 
+async def _async_setup_timelapse(
+    hass: HomeAssistant,
+    api: PrusaConnectAPI,
+    printer_coordinator: PrusaConnectPrinterCoordinator,
+    job_coordinator: PrusaConnectJobCoordinator,
+) -> TimelapseRecorder | None:
+    """Start recording timelapses for every printer that has a camera."""
+    cameras: dict[str, int] = {}
+    for printer_uuid in printer_coordinator.data:
+        try:
+            found = await api.get_printer_cameras(printer_uuid)
+        except Exception as err:  # noqa: BLE001 - one bad printer must not
+            # stop the others being recorded.
+            _LOGGER.warning(
+                "Could not list cameras for printer %s: %s", printer_uuid, err
+            )
+            continue
+        for camera in found:
+            if camera.get("id") is not None:
+                cameras[printer_uuid] = camera["id"]
+                break
+
+    if not cameras:
+        _LOGGER.warning("Timelapse is enabled but no printer has a camera")
+        return None
+
+    recorder = TimelapseRecorder(
+        hass, api, printer_coordinator, cameras, job_coordinator
+    )
+    recorder.async_start()
+    return recorder
+
+
+async def _async_options_updated(
+    hass: HomeAssistant, entry: PrusaConnectConfigEntry
+) -> None:
+    """Apply an options change by reloading — and only an options change.
+
+    This listener fires on *any* update to the config entry, and the access
+    token is written back to that same entry every time it is refreshed. So
+    reloading unconditionally restarted the whole integration on a schedule set
+    by token expiry: observed at almost exactly two-hour intervals, each one
+    ending the timelapse recording in progress and starting a fresh one. A
+    seven-hour print came out as a 12-second video and some fragments.
+    """
+    data = getattr(entry, "runtime_data", None)
+    if data is not None and data.options == dict(entry.options):
+        return
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_unload_entry(
     hass: HomeAssistant, entry: PrusaConnectConfigEntry
 ) -> bool:
     """Unload a Prusa Connect config entry."""
+    recorder = entry.runtime_data.timelapse
+    if recorder is not None:
+        # Finishes rather than discards: a reload mid-print should still yield
+        # the frames captured so far.
+        await recorder.async_stop()
+
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

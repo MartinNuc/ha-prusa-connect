@@ -7,8 +7,14 @@ from typing import Any
 
 import aiohttp
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import AbortFlow
 
 from .auth import (
@@ -20,13 +26,51 @@ from .auth import (
     authenticate_totp,
     decode_id_token,
 )
-from .const import CONF_ACCESS_TOKEN, CONF_REFRESH_TOKEN, CONF_USER_ID, DOMAIN
+from .const import (
+    CONF_ACCESS_TOKEN,
+    CONF_REFRESH_TOKEN,
+    CONF_TIMELAPSE,
+    CONF_USER_ID,
+    DEFAULT_TIMELAPSE,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
+class PrusaConnectOptionsFlow(OptionsFlow):
+    """Options for an existing Prusa Connect entry."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user turn timelapse recording on or off."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_TIMELAPSE,
+                        default=self.config_entry.options.get(
+                            CONF_TIMELAPSE, DEFAULT_TIMELAPSE
+                        ),
+                    ): bool,
+                }
+            ),
+        )
+
+
 class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Prusa Connect."""
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the options flow."""
+        return PrusaConnectOptionsFlow()
 
     VERSION = 1
 
@@ -39,11 +83,19 @@ class PrusaConnectConfigFlow(ConfigFlow, domain=DOMAIN):
         """Return (user_id, label) for the signed-in account.
 
         Connect exposes no user endpoint, so identity comes from the id_token.
+
+        The label becomes the config entry's title, which Home Assistant reuses
+        verbatim where nothing else identifies us: the reauthentication repair
+        reads "Authentication expired for {title}" and is filed under Home
+        Assistant Core, not this integration. A bare email address leaves the
+        user guessing which of their accounts expired, so the title carries the
+        brand as well.
         """
         claims = decode_id_token(tokens["id_token"])
         user = claims.get("user") or {}
         user_id = str(user.get("id") or claims.get("sub") or "")
-        label = user.get("email") or self._email or "Prusa Connect"
+        account = user.get("email") or self._email
+        label = f"Prusa Connect ({account})" if account else "Prusa Connect"
         return user_id, label
 
     async def async_step_user(

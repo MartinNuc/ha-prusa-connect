@@ -16,6 +16,7 @@ from .coordinator import PrusaConnectPrinterCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
+
 def _resolve_printer(
     hass: HomeAssistant, call: ServiceCall
 ) -> tuple[PrusaConnectAPI, PrusaConnectPrinterCoordinator, str]:
@@ -66,6 +67,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     if hass.services.has_service(DOMAIN, "pause_print"):
         return
+
 
     def _make_simple_handler(method_name: str):
         """Build a handler for a command that takes no arguments."""

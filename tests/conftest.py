@@ -20,7 +20,7 @@ import json
 import sys
 import types
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import IntFlag, StrEnum
 from pathlib import Path
 
 import pytest
@@ -41,6 +41,29 @@ class _Subscriptable:
 
     def __class_getitem__(cls, item):  # noqa: D105
         return cls
+
+
+async def _noop_coroutine(*_args, **_kwargs) -> None:
+    """Stand-in for HA base-class coroutines the integration calls via super()."""
+
+
+def _attr_property(name: str, default=None) -> property:
+    """Mirror HA's convention of exposing ``_attr_x`` as the property ``x``."""
+    return property(lambda self: getattr(self, f"_attr_{name}", default))
+
+
+def _dataclass_like(name: str, field: str) -> type:
+    """A tiny value object mirroring HA's WebRTC message types."""
+
+    def __init__(self, value) -> None:  # noqa: ANN001
+        setattr(self, field, value)
+
+    def __eq__(self, other) -> bool:  # noqa: ANN001
+        return isinstance(other, type(self)) and getattr(self, field) == getattr(
+            other, field
+        )
+
+    return type(name, (), {"__init__": __init__, "__eq__": __eq__})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -85,6 +108,7 @@ def _install_homeassistant_stubs() -> None:
     )
 
     exceptions = _module("homeassistant.exceptions")
+    exceptions.HomeAssistantError = type("HomeAssistantError", (Exception,), {})
     exceptions.ConfigEntryAuthFailed = type("ConfigEntryAuthFailed", (Exception,), {})
     exceptions.ServiceValidationError = type(
         "ServiceValidationError", (Exception,), {}
@@ -99,6 +123,8 @@ def _install_homeassistant_stubs() -> None:
         "ConfigFlow", (), {"__init_subclass__": classmethod(lambda cls, **kw: None)}
     )
     config_entries.ConfigFlowResult = dict
+    config_entries.OptionsFlow = type("OptionsFlow", (), {})
+    config_entries.OptionsFlowWithReload = type("OptionsFlowWithReload", (), {})
 
     data_entry_flow = _module("homeassistant.data_entry_flow")
     data_entry_flow.AbortFlow = type("AbortFlow", (Exception,), {})
@@ -111,10 +137,20 @@ def _install_homeassistant_stubs() -> None:
         (_Subscriptable,),
         {"__init__": lambda self, *a, **k: None},
     )
+    def _coordinator_init(self, coordinator=None, *_args, **_kwargs) -> None:  # noqa: ANN001
+        # Keep the coordinator: entities now derive availability from it, so a
+        # stub that dropped it would make every availability test vacuous.
+        self.coordinator = coordinator
+
     update_coordinator.CoordinatorEntity = type(
         "CoordinatorEntity",
         (_Subscriptable,),
-        {"__init__": lambda self, *a, **k: None, "available": True},
+        {
+            "__init__": _coordinator_init,
+            "available": property(
+                lambda self: getattr(self.coordinator, "last_update_success", True)
+            ),
+        },
     )
     update_coordinator.UpdateFailed = type("UpdateFailed", (Exception,), {})
 
@@ -131,11 +167,35 @@ def _install_homeassistant_stubs() -> None:
     aiohttp_client = _module("homeassistant.helpers.aiohttp_client")
     aiohttp_client.async_get_clientsession = lambda hass: None
 
+    event = _module("homeassistant.helpers.event")
+
+    def _track_time_interval(hass, action, interval, **kwargs):
+        """Record the callback and hand back a canceller.
+
+        Tests drive capture explicitly; what matters here is that the recorder
+        registers and cancels the timer, not that real time passes.
+        """
+        return lambda: None
+
+    event.async_track_time_interval = _track_time_interval
+
+    util = _module("homeassistant.util")
+    dt_util = _module("homeassistant.util.dt")
+    dt_util.now = lambda: __import__("datetime").datetime(2026, 8, 14, 20, 30, 0)
+    # utcnow is deliberately the real clock, not the frozen one above: the
+    # elapsed-time fallback measures against wall time, and tests that build a
+    # job "an hour ago" need the two to agree.
+    dt_util.utcnow = lambda: __import__("datetime").datetime.now(
+        __import__("datetime").UTC
+    )
+    util.dt = dt_util
+
     helpers.update_coordinator = update_coordinator
     helpers.device_registry = device_registry
     helpers.entity_platform = entity_platform
     helpers.typing = typing_mod
     helpers.aiohttp_client = aiohttp_client
+    helpers.event = event
 
     _module("homeassistant.components")
 
@@ -168,13 +228,75 @@ def _install_homeassistant_stubs() -> None:
     button.ButtonEntity = type("ButtonEntity", (), {})
 
     camera = _module("homeassistant.components.camera")
-    camera.Camera = type("Camera", (), {"__init__": lambda self, *a, **k: None})
+    camera.Camera = type(
+        "Camera",
+        (),
+        {
+            "__init__": lambda self, *a, **k: None,
+            "async_will_remove_from_hass": _noop_coroutine,
+            # HA's Entity exposes _attr_* through properties; mirror the few
+            # the camera entity sets so tests can read them as HA would.
+            "unique_id": _attr_property("unique_id"),
+            "name": _attr_property("name"),
+            "is_streaming": _attr_property("is_streaming", False),
+            "supported_features": _attr_property("supported_features", 0),
+            "frame_interval": _attr_property("frame_interval", 0.0),
+        },
+    )
+    camera.CameraEntityFeature = IntFlag("CameraEntityFeature", {"STREAM": 2})
+    camera.WebRTCAnswer = _dataclass_like("WebRTCAnswer", "answer")
+    camera.WebRTCCandidate = _dataclass_like("WebRTCCandidate", "candidate")
+    camera.WebRTCSendMessage = object
 
     image = _module("homeassistant.components.image")
     image.ImageEntity = type("ImageEntity", (), {"__init__": lambda self, *a, **k: None})
 
 
+def _install_aiortc_stub() -> None:
+    """Stub aiortc so camera logic is testable without the media stack.
+
+    Tests mostly substitute their own stream session, but the ICE configuration
+    we hand aiortc is our own logic and worth asserting on, so the stubs keep
+    their keyword arguments rather than discarding them.
+    """
+    if "aiortc" in sys.modules:
+        return
+
+    def _keep_kwargs(self, *_args, **kwargs) -> None:  # noqa: ANN001
+        self.__dict__.update(kwargs)
+
+    aiortc = _module("aiortc")
+    for name in (
+        "RTCConfiguration",
+        "RTCIceServer",
+        "RTCPeerConnection",
+        "RTCSessionDescription",
+    ):
+        setattr(aiortc, name, type(name, (), {"__init__": _keep_kwargs}))
+
+    media = _module("aiortc.contrib.media")
+    media.MediaRelay = type("MediaRelay", (), {"__init__": lambda self, *a, **k: None})
+    _module("aiortc.contrib").media = media
+
+    sdp = _module("aiortc.sdp")
+    sdp.candidate_from_sdp = lambda value: value
+
+
+def _install_socketio_stub() -> None:
+    """Stub python-socketio so signalling logic is testable without the dep.
+
+    Tests substitute their own recording client for ``AsyncClient``; this only
+    needs to exist so the import succeeds.
+    """
+    if "socketio" in sys.modules:
+        return
+    socketio = _module("socketio")
+    socketio.AsyncClient = type("AsyncClient", (), {})
+
+
 _install_homeassistant_stubs()
+_install_socketio_stub()
+_install_aiortc_stub()
 
 
 def _load(name: str) -> dict:
