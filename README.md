@@ -82,14 +82,11 @@ Uses the official Prusa Connect Mobile API with OAuth 2.0 PKCE authentication �
 - Home Assistant 2025.3.0 or newer (uses `AddConfigEntryEntitiesCallback`)
 - A Prusa Account with at least one printer registered on Prusa Connect
 
-Live camera video uses [aiortc](https://github.com/aiortc/aiortc), which the
-integration installs when it first finds a camera that can stream, rather than
-listing it as a hard requirement. If aiortc cannot be installed next to your
-Home Assistant version — Home Assistant 2026.10 pins PyAV 19, and aiortc 1.15.0
-only accepts PyAV below 18 — cameras fall back to snapshots, a warning is
-logged, and everything else keeps working. Installation is retried on every
-restart, so a newer aiortc release restores live video without an integration
-update.
+Live camera video needs [aiortc](https://github.com/aiortc/aiortc), which is
+installed on first setup rather than listed as a hard requirement. If it can't
+be installed alongside your Home Assistant version, cameras show snapshots only
+and installation is retried on the next restart. As of Home Assistant 2026.10
+this is the case until aiortc supports PyAV 19 (aiortc/aiortc#1447).
 
 ## License
 

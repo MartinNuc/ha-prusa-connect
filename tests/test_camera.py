@@ -533,16 +533,10 @@ class TestStreamingState:
 
 
 class TestStreamingDependency:
-    """aiortc is installed at setup, and its absence costs only the live view.
-
-    Home Assistant 2026.10 pins PyAV 19 while aiortc 1.15.0 wants PyAV < 18.
-    With aiortc in the manifest that conflict failed the whole integration —
-    printer sensors and controls included — over a feature most viewers use
-    occasionally.
-    """
+    """aiortc is installed at setup; without it cameras serve snapshots only."""
 
     class _SetupHass(_Hass):
-        """Records requirement installs and serves imports synchronously."""
+        """Records imports instead of performing them."""
 
         def __init__(self) -> None:
             super().__init__()
@@ -616,12 +610,12 @@ class TestStreamingDependency:
         with caplog.at_level(logging.WARNING):
             [entity] = await self._setup(hass, self._entry([CAMERA]))
 
-        assert hass.imports == [], "importing aiortc would fail"
+        assert hass.imports == []
         assert not getattr(entity, "_attr_supported_features", 0)
         assert await entity.async_camera_image() == b"jpeg"
         with pytest.raises(HomeAssistantError, match="does not support"):
             await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
-        assert "Live camera video is disabled" in caplog.text
+        assert "live camera video is disabled" in caplog.text
 
     @pytest.mark.asyncio
     async def test_snapshot_only_cameras_never_install_it(self, requirements) -> None:

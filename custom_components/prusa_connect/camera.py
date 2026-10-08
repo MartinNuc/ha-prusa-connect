@@ -50,23 +50,18 @@ FAILURE_COOLDOWN = 30.0
 # Cameras advertise their capabilities; only some can stream.
 FEATURE_WEBRTC = "WebRtc"
 
-# Live video needs aiortc, which is deliberately not a manifest requirement.
-# Home Assistant pins PyAV for its own stream component, and an aiortc release
-# whose PyAV range excludes that pin cannot be installed at all — as a manifest
-# requirement that takes the whole integration down with it, sensors and
-# controls included (2026.10 pins av 19; aiortc 1.15.0 wants av<18). Installing
-# it here instead costs only the live view, and the lower bound alone lets a
-# later aiortc that accepts the pin install with no change to this file.
+# Not a manifest requirement: when aiortc's PyAV range conflicts with the PyAV
+# Home Assistant pins, a manifest requirement fails the whole integration. No
+# upper bound, so a release that accepts HA's PyAV is picked up on restart.
 AIORTC_REQUIREMENT = "aiortc>=1.15.0"
 
-# Bound by `_async_load_streaming` once aiortc is importable. Kept module-level
-# so the session class has one name to look up, and to substitute in tests.
+# Set by _async_load_streaming; None until aiortc is installed.
 CameraStreamSession: type[_CameraStreamSession] | None = None
 
 
 async def _async_load_streaming(hass: HomeAssistant) -> bool:
     """Install and import the WebRTC stack; False if this host cannot have it."""
-    global CameraStreamSession  # noqa: PLW0603 - see the declaration above
+    global CameraStreamSession  # noqa: PLW0603
 
     if CameraStreamSession is not None:
         return True
@@ -74,11 +69,8 @@ async def _async_load_streaming(hass: HomeAssistant) -> bool:
         await async_process_requirements(hass, DOMAIN, [AIORTC_REQUIREMENT])
     except RequirementsNotFound:
         _LOGGER.warning(
-            "Live camera video is disabled: %s cannot be installed alongside "
-            "this version of Home Assistant, usually because its PyAV range "
-            "excludes the one Home Assistant pins. Snapshots still work. It is "
-            "tried again on the next restart, so a newer aiortc release fixes "
-            "this without updating the integration",
+            "Could not install %s, live camera video is disabled; cameras "
+            "serve snapshots only. Retried on the next restart",
             AIORTC_REQUIREMENT,
         )
         return False
@@ -106,11 +98,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         *,
         streaming_available: bool = True,
     ) -> None:
-        """Initialize the camera entity.
-
-        ``streaming_available`` is False when aiortc could not be installed;
-        the camera then serves snapshots only, whatever it advertises.
-        """
+        """Initialize the camera entity."""
         PrusaConnectEntity.__init__(self, coordinator, printer_uuid)
         Camera.__init__(self)
         self._api = api
@@ -329,8 +317,7 @@ async def async_setup_entry(
             (printer_uuid, camera) for camera in cameras if camera.get("id") is not None
         )
 
-    # Only reach for aiortc when some camera could use it: installing it is
-    # slow, and pointless for snapshot-only cameras.
+    # Installing aiortc is slow; skip it when no camera can stream.
     streaming_available = any(
         FEATURE_WEBRTC in (camera.get("features") or []) for _, camera in found
     ) and await _async_load_streaming(hass)
