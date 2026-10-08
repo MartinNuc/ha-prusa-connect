@@ -9,11 +9,17 @@ viewer leaving, the entity being removed — has to close it.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from homeassistant.components.camera import CameraEntityFeature, WebRTCAnswer
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.requirements import RequirementsNotFound
 
+from custom_components.prusa_connect import camera as camera_platform
 from custom_components.prusa_connect.camera import PrusaConnectCamera
 from custom_components.prusa_connect.signaling import SignalingError
 
@@ -524,3 +530,120 @@ class TestStreamingState:
 
         assert entity.is_streaming is False
         assert entity.state_writes == []
+
+
+class TestStreamingDependency:
+    """aiortc is installed at setup, and its absence costs only the live view.
+
+    Home Assistant 2026.10 pins PyAV 19 while aiortc 1.15.0 wants PyAV < 18.
+    With aiortc in the manifest that conflict failed the whole integration —
+    printer sensors and controls included — over a feature most viewers use
+    occasionally.
+    """
+
+    class _SetupHass(_Hass):
+        """Records requirement installs and serves imports synchronously."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.imports: list[str] = []
+
+        async def async_add_import_executor_job(self, target, *args):  # noqa: ANN001, ANN201
+            self.imports.append(args[0])
+            return SimpleNamespace(CameraStreamSession=_Session)
+
+    @staticmethod
+    def _entry(cameras: list[dict]) -> SimpleNamespace:
+        async def get_printer_cameras(_uuid):  # noqa: ANN001, ANN202
+            return cameras
+
+        api = _Api()
+        api.get_printer_cameras = get_printer_cameras
+        return SimpleNamespace(
+            runtime_data=SimpleNamespace(
+                printer_coordinator=_Coordinator(), api=api
+            )
+        )
+
+    @staticmethod
+    async def _setup(hass, entry) -> list[PrusaConnectCamera]:  # noqa: ANN001
+        added: list[PrusaConnectCamera] = []
+        await camera_platform.async_setup_entry(
+            hass, entry, lambda entities: added.extend(entities)
+        )
+        return added
+
+    @pytest.fixture
+    def requirements(self, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        """Record install requests; aiortc starts out not loaded."""
+        requested: list[list[str]] = []
+
+        async def process(_hass, _name, reqs) -> None:  # noqa: ANN001
+            requested.append(reqs)
+
+        monkeypatch.setattr(camera_platform, "async_process_requirements", process)
+        monkeypatch.setattr(camera_platform, "CameraStreamSession", None)
+        return requested
+
+    def test_aiortc_is_not_a_manifest_requirement(self) -> None:
+        """A manifest requirement that cannot resolve fails the whole entry."""
+        manifest = json.loads(
+            (Path(camera_platform.__file__).parent / "manifest.json").read_text()
+        )
+        assert not any(r.startswith("aiortc") for r in manifest["requirements"])
+
+    @pytest.mark.asyncio
+    async def test_installs_and_streams_when_aiortc_resolves(self, requirements) -> None:
+        hass = self._SetupHass()
+        [entity] = await self._setup(hass, self._entry([CAMERA]))
+
+        assert requirements == [["aiortc>=1.15.0"]]
+        assert hass.imports == ["custom_components.prusa_connect.webrtc_session"]
+        assert entity.supported_features == CameraEntityFeature.STREAM
+        assert camera_platform.CameraStreamSession is _Session
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_snapshots_when_aiortc_cannot_install(
+        self, monkeypatch, caplog
+    ) -> None:
+        async def unresolvable(_hass, name, reqs) -> None:  # noqa: ANN001
+            raise RequirementsNotFound(name, reqs)
+
+        monkeypatch.setattr(camera_platform, "async_process_requirements", unresolvable)
+        monkeypatch.setattr(camera_platform, "CameraStreamSession", None)
+        hass = self._SetupHass()
+
+        with caplog.at_level(logging.WARNING):
+            [entity] = await self._setup(hass, self._entry([CAMERA]))
+
+        assert hass.imports == [], "importing aiortc would fail"
+        assert not getattr(entity, "_attr_supported_features", 0)
+        assert await entity.async_camera_image() == b"jpeg"
+        with pytest.raises(HomeAssistantError, match="does not support"):
+            await entity.async_handle_async_webrtc_offer("v=0\r\n", "s1", lambda _m: None)
+        assert "Live camera video is disabled" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_snapshot_only_cameras_never_install_it(self, requirements) -> None:
+        hass = self._SetupHass()
+        [entity] = await self._setup(hass, self._entry([CAMERA_NO_WEBRTC]))
+
+        assert requirements == []
+        assert hass.imports == []
+        assert entity.unique_id == f"{PRINTER_UUID}_camera_588017"
+
+    @pytest.mark.asyncio
+    async def test_loaded_once_per_process(self, requirements) -> None:
+        """A second entry, or a reload, reuses what the first one loaded."""
+        hass = self._SetupHass()
+        await self._setup(hass, self._entry([CAMERA]))
+        await self._setup(hass, self._entry([CAMERA]))
+
+        assert len(requirements) == 1
+        assert len(hass.imports) == 1
+
+    def test_unavailable_stack_overrides_what_the_camera_advertises(self) -> None:
+        entity = PrusaConnectCamera(
+            _Coordinator(), _Api(), PRINTER_UUID, CAMERA, streaming_available=False
+        )
+        assert not getattr(entity, "_attr_supported_features", 0)

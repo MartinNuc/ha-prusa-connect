@@ -114,8 +114,19 @@ def _install_homeassistant_stubs() -> None:
         "ServiceValidationError", (Exception,), {}
     )
 
+    requirements = _module("homeassistant.requirements")
+    requirements.RequirementsNotFound = type(
+        "RequirementsNotFound", (exceptions.HomeAssistantError,), {}
+    )
+
+    async def _process_requirements(hass, name, reqs) -> None:  # noqa: ANN001
+        """Pretend every requirement is already installed."""
+
+    requirements.async_process_requirements = _process_requirements
+
     ha = _module("homeassistant")
     ha.core, ha.const, ha.exceptions = core, const, exceptions
+    ha.requirements = requirements
 
     config_entries = _module("homeassistant.config_entries")
     config_entries.ConfigEntry = type("ConfigEntry", (_Subscriptable,), {})

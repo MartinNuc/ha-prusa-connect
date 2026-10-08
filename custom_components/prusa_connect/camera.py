@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -15,15 +16,17 @@ from homeassistant.components.camera import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.requirements import RequirementsNotFound, async_process_requirements
 
 from .api import PrusaConnectAPI
+from .const import DOMAIN
 from .coordinator import PrusaConnectPrinterCoordinator
 from .entity import PrusaConnectEntity
 from .signaling import SignalingError
-from .webrtc_session import CameraStreamSession
 
 if TYPE_CHECKING:
     from . import PrusaConnectConfigEntry
+    from .webrtc_session import CameraStreamSession as _CameraStreamSession
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +50,44 @@ FAILURE_COOLDOWN = 30.0
 # Cameras advertise their capabilities; only some can stream.
 FEATURE_WEBRTC = "WebRtc"
 
+# Live video needs aiortc, which is deliberately not a manifest requirement.
+# Home Assistant pins PyAV for its own stream component, and an aiortc release
+# whose PyAV range excludes that pin cannot be installed at all — as a manifest
+# requirement that takes the whole integration down with it, sensors and
+# controls included (2026.10 pins av 19; aiortc 1.15.0 wants av<18). Installing
+# it here instead costs only the live view, and the lower bound alone lets a
+# later aiortc that accepts the pin install with no change to this file.
+AIORTC_REQUIREMENT = "aiortc>=1.15.0"
+
+# Bound by `_async_load_streaming` once aiortc is importable. Kept module-level
+# so the session class has one name to look up, and to substitute in tests.
+CameraStreamSession: type[_CameraStreamSession] | None = None
+
+
+async def _async_load_streaming(hass: HomeAssistant) -> bool:
+    """Install and import the WebRTC stack; False if this host cannot have it."""
+    global CameraStreamSession  # noqa: PLW0603 - see the declaration above
+
+    if CameraStreamSession is not None:
+        return True
+    try:
+        await async_process_requirements(hass, DOMAIN, [AIORTC_REQUIREMENT])
+    except RequirementsNotFound:
+        _LOGGER.warning(
+            "Live camera video is disabled: %s cannot be installed alongside "
+            "this version of Home Assistant, usually because its PyAV range "
+            "excludes the one Home Assistant pins. Snapshots still work. It is "
+            "tried again on the next restart, so a newer aiortc release fixes "
+            "this without updating the integration",
+            AIORTC_REQUIREMENT,
+        )
+        return False
+    module = await hass.async_add_import_executor_job(
+        importlib.import_module, f"{__package__}.webrtc_session"
+    )
+    CameraStreamSession = module.CameraStreamSession
+    return True
+
 
 class PrusaConnectCamera(PrusaConnectEntity, Camera):
     """A Prusa Connect camera.
@@ -62,8 +103,14 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         api: PrusaConnectAPI,
         printer_uuid: str,
         camera: dict,
+        *,
+        streaming_available: bool = True,
     ) -> None:
-        """Initialize the camera entity."""
+        """Initialize the camera entity.
+
+        ``streaming_available`` is False when aiortc could not be installed;
+        the camera then serves snapshots only, whatever it advertises.
+        """
         PrusaConnectEntity.__init__(self, coordinator, printer_uuid)
         Camera.__init__(self)
         self._api = api
@@ -74,7 +121,8 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         self._attr_frame_interval = FRAME_INTERVAL
 
         self._supports_webrtc = (
-            FEATURE_WEBRTC in (camera.get("features") or [])
+            streaming_available
+            and FEATURE_WEBRTC in (camera.get("features") or [])
             and bool(self._camera_token)
         )
         if self._supports_webrtc:
@@ -86,7 +134,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
         # automations.
         self._attr_is_streaming = False
 
-        self._sessions: dict[str, CameraStreamSession] = {}
+        self._sessions: dict[str, _CameraStreamSession] = {}
         self._environment: dict[str, str] | None = None
         self._snapshot_failures = 0
         # When the last stream attempt failed, so the frontend's automatic
@@ -179,6 +227,7 @@ class PrusaConnectCamera(PrusaConnectEntity, Camera):
             )
 
         environment = await self._async_environment()
+        assert CameraStreamSession is not None  # implied by _supports_webrtc
         session = CameraStreamSession(
             self._api,
             environment["CAMERA_SIGNALING_SERVER"],
@@ -264,7 +313,7 @@ async def async_setup_entry(
     data = entry.runtime_data
     printer_coordinator = data.printer_coordinator
 
-    entities: list[PrusaConnectCamera] = []
+    found: list[tuple[str, dict]] = []
 
     for printer_uuid in printer_coordinator.data:
         try:
@@ -276,10 +325,23 @@ async def async_setup_entry(
             )
             continue
 
-        entities.extend(
-            PrusaConnectCamera(printer_coordinator, data.api, printer_uuid, camera)
-            for camera in cameras
-            if camera.get("id") is not None
+        found.extend(
+            (printer_uuid, camera) for camera in cameras if camera.get("id") is not None
         )
 
-    async_add_entities(entities)
+    # Only reach for aiortc when some camera could use it: installing it is
+    # slow, and pointless for snapshot-only cameras.
+    streaming_available = any(
+        FEATURE_WEBRTC in (camera.get("features") or []) for _, camera in found
+    ) and await _async_load_streaming(hass)
+
+    async_add_entities(
+        PrusaConnectCamera(
+            printer_coordinator,
+            data.api,
+            printer_uuid,
+            camera,
+            streaming_available=streaming_available,
+        )
+        for printer_uuid, camera in found
+    )
